@@ -26,6 +26,10 @@ Host System
 
 # MFRC522 to Pico 2 W Wiring
 
+The firmware's pin assignments are defined in one place, at the top of `blink_any.c`
+(`PIN_CS`, `PIN_SCK`, `PIN_MOSI`, `PIN_MISO`, `PIN_RST`). They must match the physical
+wiring below; if the serial output reports `RC522 not responding`, compare the two.
+
 | MFRC522 Pin | Pico 2 W GPIO | Physical Pin |
 | :--- | :--- | :--- |
 | **SDA** | GPIO 1 | Pin 2 |

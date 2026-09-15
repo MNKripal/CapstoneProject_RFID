@@ -9,30 +9,71 @@
 // ADT object allocation counter
 static int MFRC_Instance_Counter = 0;
 
+// Expected self-test output for a genuine MFRC522 v1.0 (datasheet 16.1.1)
+static const uint8_t SELF_TEST_BYTES[] = {
+	0x00, 0xEB, 0x66, 0xBA, 0x57, 0xBF, 0x23, 0x95,
+	0xD0, 0xE3, 0x0D, 0x3D, 0x27, 0x89, 0x5C, 0xDE,
+	0x9D, 0x3B, 0xA7, 0x00, 0x21, 0x5B, 0x89, 0x82,
+	0x51, 0x3A, 0xEB, 0x02, 0x0C, 0xA5, 0x00, 0x49,
+	0x7C, 0x84, 0x4D, 0xB3, 0xCC, 0xD2, 0x1B, 0x81,
+	0x5D, 0x48, 0x76, 0xD5, 0x71, 0x61, 0x21, 0xA9,
+	0x86, 0x96, 0x83, 0x38, 0xCF, 0x9D, 0x5B, 0x6D,
+	0xDC, 0x15, 0xBA, 0x3E, 0x7D, 0x95, 0x3B, 0x2F
+};
+
+// Chip select helpers. The NOPs give the RC522 its required setup/hold time
+// between the CS edge and the first/last clock (datasheet 8.1.2, t_NSS).
+static inline void cs_select(const uint cs) {
+	asm volatile("nop \n nop \n nop");
+	gpio_put(cs, 0); // Active low
+	asm volatile("nop \n nop \n nop");
+}
+
+static inline void cs_deselect(const uint cs) {
+	asm volatile("nop \n nop \n nop");
+	gpio_put(cs, 1);
+	asm volatile("nop \n nop \n nop");
+}
+
 /**
- * Set up the data structures of an MFRC522 ADT object and return a pointer
+ * Set up the data structures of an MFRC522 ADT object and return a pointer.
+ * The SPI peripheral itself (spi_init + SCK/MOSI/MISO pin functions) must be
+ * configured by the caller before PCD_Init() is called. This function only
+ * takes ownership of the chip-select and reset GPIOs.
+ *
+ * @param spi     SPI instance the reader is attached to (spi0 or spi1)
+ * @param cs_pin  GPIO wired to the reader's SDA/NSS pin
+ * @param rst_pin GPIO wired to the reader's RST pin
+ * @return an initialized ADT object, or NULL if no instances are left
  */
-MFRC522Ptr_t MFRC522_Init() {
+MFRC522Ptr_t MFRC522_Init(spi_inst_t *spi, uint cs_pin, uint rst_pin) {
 	// allocate instance struct array
 	static struct MFRC522_T mfrc_Instances[MFRC_MAX_INSTANCES];
-	//      static Chip_SSP_DATA_SETUP_T dataSetup_Instances[MFRC_MAX_INSTANCES];
-	//		struct MFRC522_T mfrc_struct;
-	//		Chip_SSP_DATA_SETUP_T data_setup;
 
-	// initialize fields
-	uint16_t i;
-	for (i = 0; i < BUFFER_SIZE; i++) {
-		mfrc_Instances[MFRC_Instance_Counter].Rx_Buf[i] = 0;
-		mfrc_Instances[MFRC_Instance_Counter].Tx_Buf[i] = 0;
+	if (MFRC_Instance_Counter >= MFRC_MAX_INSTANCES) {
+		return NULL;
 	}
 
-	mfrc_Instances[MFRC_Instance_Counter]._chipSelectPin = cs_pin;
-
-	// update instance counter
+	MFRC522Ptr_t mfrc = &mfrc_Instances[MFRC_Instance_Counter];
 	MFRC_Instance_Counter++;
 
-	return &(mfrc_Instances[MFRC_Instance_Counter - 1]);
-} 
+	memset(mfrc, 0, sizeof(*mfrc));
+	mfrc->spi = spi;
+	mfrc->_chipSelectPin = cs_pin;
+	mfrc->_resetPin = rst_pin;
+
+	// Chip select: idle high (deselected)
+	gpio_init(cs_pin);
+	gpio_set_dir(cs_pin, GPIO_OUT);
+	gpio_put(cs_pin, 1);
+
+	// Reset: active low, hold the chip out of reset by default
+	gpio_init(rst_pin);
+	gpio_set_dir(rst_pin, GPIO_OUT);
+	gpio_put(rst_pin, 1);
+
+	return mfrc;
+}
 
 
 
@@ -106,24 +147,33 @@ void PCD_ReadNRegister(
 	uint8_t *values, ///< uint8_t array to store the values in.
 	uint8_t rxAlign ///< Only bit positions rxAlign..7 in values[0] are updated.
 	) {
-	uint8_t buf = 0;
-	const uint8_t msg = 0x80 | reg;
-	
-	cs_select(mfrc->_chipSelectPin);
-
-	// uint8_t i;
-	// for(i = 0; i < count; i++) {
-	// 	uint8_t value = 0;
-	// 	spi_write_blocking(mfrc->spi, &msg, 1);
-	// 	spi_read_blocking(mfrc->spi, 0, &value, 1);
-	// 	values[i] = value;
-	// }
-
-	uint8_t i;
-	for(i = 0; i < count; i++) {
-		values[i] = PCD_ReadRegister(mfrc, msg);
+	if (count == 0) {
+		return;
 	}
+	const uint8_t address = 0x80 | reg; // MSB == 1 is for reading.
+	const uint8_t zero = 0x00;
+	uint8_t index = 0;
 
+	cs_select(mfrc->_chipSelectPin);
+	count--; // One read is performed outside of the loop
+	// Tell MFRC522 which address we want to read. The byte clocked back
+	// during this first transfer is garbage and is discarded.
+	spi_write_blocking(mfrc->spi, &address, 1);
+	if (rxAlign) { // Only update bit positions rxAlign..7 in values[0]
+		// Create bit mask for bit positions rxAlign..7
+		uint8_t mask = (0xFF << rxAlign) & 0xFF;
+		uint8_t value;
+		spi_write_read_blocking(mfrc->spi, &address, &value, 1);
+		values[0] = (values[0] & ~mask) | (value & mask);
+		index++;
+	}
+	while (index < count) {
+		// Send the address again to keep reading, receive the previous byte
+		spi_write_read_blocking(mfrc->spi, &address, &values[index], 1);
+		index++;
+	}
+	// Last byte: send 0x00 to stop reading (datasheet table 6)
+	spi_write_read_blocking(mfrc->spi, &zero, &values[index], 1);
 	cs_deselect(mfrc->_chipSelectPin);
 }
 
@@ -209,28 +259,32 @@ PCD_CalculateCRC(MFRC522Ptr_t mfrc,
 
 /**
  * Initializes the MFRC522 chip.
+ * Performs a hardware reset via the reset pin, a soft reset, and then writes
+ * the timer / modulation / CRC configuration and turns the antenna on.
+ * Safe to call again at any time to recover a reader that has stopped
+ * responding.
  */
-void PCD_Init(MFRC522Ptr_t mfrc, spi_inst_t *spi) {
+void PCD_Init(MFRC522Ptr_t mfrc) {
+	// Make sure chip select is deasserted before touching the reader
+	gpio_put(mfrc->_chipSelectPin, 1);
 
-	mfrc->spi = spi0;
-	gpio_put(RESET_PIN, 0);
-    sleep_ms(1000);
-    gpio_put(RESET_PIN, 1);
+	// Hardware reset. The datasheet only requires a 100 ns low pulse, but a
+	// short hold makes sure the whole module (and any clone) really resets.
+	gpio_put(mfrc->_resetPin, 0);
+	sleep_ms(10);
+	gpio_put(mfrc->_resetPin, 1);
+	// Oscillator start-up time: crystal start-up + 37.74 us. Be generous.
 	sleep_ms(50);
 
-    gpio_init(cs_pin);
-    gpio_set_dir(cs_pin, GPIO_OUT);
-    gpio_put(cs_pin, 1);
+	// Soft reset as well, and wait until the chip reports it is ready.
+	PCD_Reset(mfrc);
 
-    spi_init(spi0, 1000000);
-
-    spi_set_format(spi0, 8, 0, 0, SPI_MSB_FIRST);
-
-    gpio_set_function(sck_pin, GPIO_FUNC_SPI);
-    gpio_set_function(mosi_pin, GPIO_FUNC_SPI);
-    gpio_set_function(miso_pin, GPIO_FUNC_SPI);
-
-	PCD_WriteRegister(mfrc, CommandReg, PCD_SoftReset);
+	// Reset baud rates and modulation width to their defaults. A previous
+	// (interrupted) transaction can leave these in a state where the reader
+	// no longer answers cards.
+	PCD_WriteRegister(mfrc, TxModeReg, 0x00);
+	PCD_WriteRegister(mfrc, RxModeReg, 0x00);
+	PCD_WriteRegister(mfrc, ModWidthReg, 0x26);
 
 	// When communicating with a PICC we need a timeout if something goes wrong.
 	// f_timer = 13.56 MHz / (2*TPreScaler+1) where TPreScaler =
@@ -245,7 +299,7 @@ void PCD_Init(MFRC522Ptr_t mfrc, spi_inst_t *spi) {
 	PCD_WriteRegister(mfrc, TPrescalerReg,
 					  0xA9); // TPreScaler = TModeReg[3..0]:TPrescalerReg, ie
 							 // 0x0A9 = 169 => f_timer=40kHz, ie a timer period
-							 // of 25 s.
+							 // of 25 us.
 	PCD_WriteRegister(
 		mfrc, TReloadRegH,
 		0x03); // Reload timer with 0x3E8 = 1000, ie 25ms before timeout.
@@ -258,6 +312,11 @@ void PCD_Init(MFRC522Ptr_t mfrc, spi_inst_t *spi) {
 											// value for the CRC coprocessor for
 											// the CalcCRC command to 0x6363
 											// (ISO 14443-3 part 6.2.4)
+
+	// Maximum receiver gain gives the most reliable detection with the small
+	// PCB antenna on the common RC522 modules.
+	PCD_SetAntennaGain(mfrc, RxGain_max);
+
 	PCD_AntennaOn(mfrc); // Enable the antenna driver pins TX1 and TX2 (they
 						 // were disabled by the reset)
 } // End PCD_Init()
@@ -268,20 +327,47 @@ void PCD_Init(MFRC522Ptr_t mfrc, spi_inst_t *spi) {
 void PCD_Reset(MFRC522Ptr_t mfrc) {
 	PCD_WriteRegister(mfrc, CommandReg,
 					  PCD_SoftReset); // Issue the SoftReset command.
-	// The datasheet does not mention how long the SoftRest command takes to
-	// complete.
-	// But the MFRC522 might have been in soft power-down mode (triggered by bit
-	// 4 of CommandReg)
-	// Section 8.8.2 in the datasheet says the oscillator start-up time is the
-	// start up time of the crystal + 37,74 s. Let us be generous: 50ms.
-	//SysTick_Init();
-	sleep_ms(50);
-	// Wait for the PowerDown bit in CommandReg to be cleared
-	while (PCD_ReadRegister(mfrc, CommandReg) & (1 << 4)) {
-		// PCD still restarting - unlikely after waiting 50ms, but better safe
-		// than sorry.
-	}
+	// The datasheet does not mention how long the SoftReset command takes to
+	// complete. But the MFRC522 might have been in soft power-down mode
+	// (triggered by bit 4 of CommandReg). Section 8.8.2 in the datasheet says
+	// the oscillator start-up time is the start up time of the crystal +
+	// 37.74 us. Let us be generous: 50ms.
+	uint8_t count = 0;
+	do {
+		sleep_ms(50);
+		// Wait for the PowerDown bit in CommandReg to be cleared. Give up
+		// after 3 tries (150 ms) so a disconnected reader cannot hang us.
+	} while ((PCD_ReadRegister(mfrc, CommandReg) & (1 << 4)) && (++count) < 3);
 } // End PCD_Reset()
+
+/**
+ * Returns true if the reader answers on the SPI bus with a plausible version
+ * byte. 0x00 / 0xFF mean the bus is floating (bad wiring, wrong CS pin, or the
+ * chip is held in reset).
+ */
+bool PCD_IsResponding(MFRC522Ptr_t mfrc) {
+	uint8_t v = PCD_ReadRegister(mfrc, VersionReg);
+	return (v != 0x00) && (v != 0xFF);
+} // End PCD_IsResponding()
+
+/**
+ * Cheap runtime health check. Returns false if the reader has silently reset
+ * (brown-out, floating RST, EMI): after any reset the antenna driver bits in
+ * TxControlReg are cleared, and the timer configuration we rely on for
+ * timeouts is gone. Callers should run PCD_Init() again when this fails.
+ */
+bool PCD_IsHealthy(MFRC522Ptr_t mfrc) {
+	if (!PCD_IsResponding(mfrc)) {
+		return false;
+	}
+	if ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) != 0x03) {
+		return false; // Antenna is off => chip was reset behind our back
+	}
+	if ((PCD_ReadRegister(mfrc, TModeReg) & 0x80) == 0) {
+		return false; // TAuto lost => timeouts would not work
+	}
+	return true;
+} // End PCD_IsHealthy()
 
 /**
  * Turns the antenna on by enabling pins TX1 and TX2.
@@ -362,12 +448,15 @@ uint8_t PCD_SelfTest(MFRC522Ptr_t mfrc) {
 
     //The self test is initiated. Wait for completion
     bool self_test_complete = false;
-    while (!self_test_complete) {
+    for (uint16_t tries = 0; tries < 0xFFFF && !self_test_complete; tries++) {
         uint8_t buf = PCD_ReadRegister(mfrc, FIFOLevelReg);
-        //printf("%x\n\r", buf);
         if (buf >= 64) {
             self_test_complete = true;
         }
+    }
+    if (!self_test_complete) {
+        PCD_WriteRegister(mfrc, AutoTestReg, 0x00); //Disable self-test
+        return -1;
     }
     //printf("Self test completed\n\r");
 
@@ -1395,7 +1484,6 @@ StatusCode PCD_NTAG216_AUTH(MFRC522Ptr_t mfrc, uint8_t *passWord,
 
 	// Transceive the data, store the reply in cmdBuffer[]
 	uint8_t waitIRq = 0x30; // RxIRq and IdleIRq
-	uint8_t cmdBufferSize = sizeof(cmdBuffer);
 	uint8_t validBits = 0;
 	uint8_t rxlength = 5;
 	result =
@@ -1579,13 +1667,9 @@ const char *PICC_GetTypeName(PICC_Type piccType ///< One of the PICC_Type enums.
  * Shows all known firmware versions
  */
 void PCD_DumpVersionToSerial(MFRC522Ptr_t mfrc) {
-	char string[2];
 	// Get the MFRC522 firmware version
 	uint8_t v = PCD_ReadRegister(mfrc, VersionReg);
-	printf("Firmware Version: 0x");
-	// print the hexa value of a unsigned char
-	sprintf(string, "%02X", (char)v);
-	printf(string);
+	printf("Firmware Version: 0x%02X", v);
 	// Lookup which version
 	switch (v) {
 	case 0x88:
@@ -2116,7 +2200,7 @@ bool MIFARE_SetUid(MFRC522Ptr_t mfrc, uint8_t *newUid, uint8_t uidSize,
 	}
 
 	// Authenticate for reading
-	MIFARE_Key key = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	MIFARE_Key key = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
 	StatusCode status = PCD_Authenticate(mfrc, PICC_CMD_MF_AUTH_KEY_A,
 										 (uint8_t)1, &key, &(mfrc->uid));
 	if (status != STATUS_OK) {
@@ -2246,6 +2330,14 @@ bool MIFARE_UnbrickUidSector(MFRC522Ptr_t mfrc, bool logErrors) {
 bool PICC_IsNewCardPresent(MFRC522Ptr_t mfrc) {
 	uint8_t bufferATQA[2];
 	uint8_t bufferSize = sizeof(bufferATQA);
+
+	// Reset baud rates and modulation width. A failed or interrupted
+	// transaction with a previous card can leave these changed, after which
+	// no card is detected any more.
+	PCD_WriteRegister(mfrc, TxModeReg, 0x00);
+	PCD_WriteRegister(mfrc, RxModeReg, 0x00);
+	PCD_WriteRegister(mfrc, ModWidthReg, 0x26);
+
 	StatusCode result = PICC_RequestA(mfrc, bufferATQA, &bufferSize);
 	return (result == STATUS_OK || result == STATUS_COLLISION);
 } // End PICC_IsNewCardPresent()
@@ -2263,15 +2355,3 @@ bool PICC_ReadCardSerial(MFRC522Ptr_t mfrc) {
 	StatusCode result = PICC_Select(mfrc, &(mfrc->uid), 0);
 	return (result == STATUS_OK);
 } // End
-
-static inline void cs_select(const uint cs) {
-    asm volatile("nop \n nop \n nop");
-    gpio_put(cs, 0); // Active low
-    asm volatile("nop \n nop \n nop");
-}
-
-static inline void cs_deselect(const uint cs) {
-    asm volatile("nop \n nop \n nop");
-    gpio_put(cs, 1);
-    asm volatile("nop \n nop \n nop");
-}

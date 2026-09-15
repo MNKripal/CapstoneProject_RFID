@@ -30,27 +30,10 @@
 // Defined as 4MHz in the original library
 #define MFRC522_BIT_RATE 4000000 
 // Used for ADT object allocation
-#define MFRC_MAX_INSTANCES 2	 
-// Reset pin to MFRC522
-#define RESET_PIN 15
+#define MFRC_MAX_INSTANCES 2
 
-static const uint cs_pin   = 5;
-static const uint sck_pin  = 2;
-static const uint mosi_pin = 3;
-static const uint miso_pin = 4;
-
-static const uint8_t SELF_TEST_BYTES[] = {
-	0x00, 0xEB, 0x66, 0xBA, 0x57, 0xBF, 0x23, 0x95,
-	0xD0, 0xE3, 0x0D, 0x3D, 0x27, 0x89, 0x5C, 0xDE,
-	0x9D, 0x3B, 0xA7, 0x00, 0x21, 0x5B, 0x89, 0x82,
-	0x51, 0x3A, 0xEB, 0x02, 0x0C, 0xA5, 0x00, 0x49,
-	0x7C, 0x84, 0x4D, 0xB3, 0xCC, 0xD2, 0x1B, 0x81,
-	0x5D, 0x48, 0x76, 0xD5, 0x71, 0x61, 0x21, 0xA9,
-	0x86, 0x96, 0x83, 0x38, 0xCF, 0x9D, 0x5B, 0x6D,
-	0xDC, 0x15, 0xBA, 0x3E, 0x7D, 0x95, 0x3B, 0x2F
-};
-
-//0x2F
+// NOTE: pin numbers are no longer hard-coded here. Pass the SPI instance,
+// chip-select GPIO and reset GPIO to MFRC522_Init() from your application.
 
 /**
  * MFRC522 registers. Described in chapter 9 of the datasheet.
@@ -299,9 +282,9 @@ typedef struct {
 // A struct used to define a MFRC522 ADT object, useful when using more than one
 struct MFRC522_T {
 	Uid uid; // Used by PICC_ReadCardSerial().
-	// Variables used in the SSP(SPI) peripheral of the board
-	spi_inst_t *spi; // Select SSP0 or SSP1
-	uint _chipSelectPin; // = {1, 8}; // As default example use GPIO1[8]= P1_5
+	spi_inst_t *spi;     // SPI instance the reader is attached to (spi0/spi1)
+	uint _chipSelectPin; // GPIO wired to the reader's SDA/NSS pin
+	uint _resetPin;      // GPIO wired to the reader's RST pin
 	uint8_t Tx_Buf[BUFFER_SIZE];
 	uint8_t Rx_Buf[BUFFER_SIZE];
 };
@@ -310,10 +293,16 @@ struct MFRC522_T {
 typedef struct MFRC522_T *MFRC522Ptr_t;
 
 /**
- * Function to setup a MFRC522 ADT object
- * @return an initialized  ADT object
+ * Function to setup a MFRC522 ADT object.
+ * The caller must configure the SPI peripheral (spi_init, spi_set_format and
+ * the SCK/MOSI/MISO pin functions) before calling PCD_Init(). This function
+ * takes ownership of the chip-select and reset GPIOs.
+ * @param spi     spi0 or spi1
+ * @param cs_pin  GPIO connected to the module's SDA/NSS pin
+ * @param rst_pin GPIO connected to the module's RST pin
+ * @return an initialized ADT object, or NULL if MFRC_MAX_INSTANCES is exceeded
  */
-MFRC522Ptr_t MFRC522_Init();
+MFRC522Ptr_t MFRC522_Init(spi_inst_t *spi, uint cs_pin, uint rst_pin);
 
 /*******************************************************************************
 * Basic interface functions for communicating with the MFRC522
@@ -329,16 +318,14 @@ void PCD_SetRegisterBitMask(MFRC522Ptr_t mfrc, uint8_t reg, uint8_t mask);
 void PCD_ClearRegisterBitMask(MFRC522Ptr_t mfrc, uint8_t reg, uint8_t mask);
 StatusCode PCD_CalculateCRC(MFRC522Ptr_t mfrc, uint8_t *data, uint8_t length,
 							uint8_t *result);
-							
-//Chip select for pi pico SPI
-static inline void cs_select(const uint cs);
-static inline void cs_deselect(const uint cs); 
 
 /*******************************************************************************
 * Functions for manipulating the MFRC522
 *******************************************************************************/
-void PCD_Init(MFRC522Ptr_t mfrc, spi_inst_t *spi);
+void PCD_Init(MFRC522Ptr_t mfrc);
 void PCD_Reset(MFRC522Ptr_t mfrc);
+bool PCD_IsResponding(MFRC522Ptr_t mfrc);
+bool PCD_IsHealthy(MFRC522Ptr_t mfrc);
 void PCD_AntennaOn(MFRC522Ptr_t mfrc);
 void PCD_AntennaOff(MFRC522Ptr_t mfrc);
 uint8_t PCD_GetAntennaGain(MFRC522Ptr_t mfrc);
@@ -393,6 +380,7 @@ StatusCode PCD_NTAG216_AUTH(MFRC522Ptr_t mfrc, uint8_t *passWord,
 StatusCode PCD_MIFARE_Transceive(MFRC522Ptr_t mfrc, uint8_t *sendData,
 								 uint8_t sendLen, bool acceptTimeout);
 const char *GetStatusCodeName(StatusCode code);
+PICC_Type PICC_GetType(uint8_t sak);
 const char *PICC_GetTypeName(PICC_Type type);
 StatusCode MIFARE_TwoStepHelper(MFRC522Ptr_t mfrc, uint8_t command,
 								uint8_t blockAddr, long data);
