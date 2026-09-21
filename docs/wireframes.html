@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dashboard wireframes</title>
+<style>
+  body { margin: 0; padding: 32px; background: #fff; color: #222; font: 13px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .intro { color: #666; margin-bottom: 28px; max-width: 900px; }
+  .frame { border: 2px solid #333; border-radius: 6px; width: 960px; margin: 0 0 40px; background: #fafafa; page-break-inside: avoid; }
+  .frame h2 { font-size: 14px; margin: 0; padding: 8px 12px; background: #333; color: #fff; border-radius: 3px 3px 0 0; }
+  .nav { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 2px solid #999; background: #eee; align-items: center; }
+  .nav .b { font-weight: 700; margin-right: 12px; }
+  .nav .t { padding: 4px 10px; border: 1px dashed #999; }
+  .nav .t.on { background: #333; color: #fff; border-style: solid; }
+  .nav .sp { flex: 1; }
+  .body { padding: 14px; }
+  .box { border: 1.5px solid #666; background: #fff; padding: 8px; position: relative; min-height: 40px; }
+  .box.gray { background: repeating-linear-gradient(45deg, #f4f4f4 0 6px, #e9e9e9 6px 12px); }
+  .box .lbl { position: absolute; top: 4px; left: 8px; font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.04em; }
+  .r { display: flex; gap: 10px; margin-bottom: 10px; }
+  .c { flex: 1; }
+  .c2 { flex: 2; } .c3 { flex: 3; }
+  .tiles .box { height: 64px; }
+  .tiles .box .n { font-size: 24px; font-weight: 700; margin-top: 16px; }
+  .tall { height: 220px; }
+  .table { display: grid; gap: 0; }
+  .table div { padding: 5px 6px; border-bottom: 1px solid #ddd; }
+  .table .h { font-weight: 700; background: #f1f1f1; }
+  .pill { display: inline-block; border: 1px solid #666; border-radius: 999px; padding: 0 8px; font-size: 11px; }
+  .btn { display: inline-block; border: 1.5px solid #333; border-radius: 4px; padding: 2px 10px; font-size: 12px; background: #fff; }
+  .btn.p { background: #333; color: #fff; }
+  .note { position: absolute; right: -230px; top: 0; width: 210px; background: #fff7c7; border: 1px solid #e0c95a; padding: 6px 8px; font-size: 11px; color: #5a4a00; }
+  .rel { position: relative; }
+  .filters .box { padding: 6px 10px; }
+  .sel { display: inline-block; border: 1px solid #999; padding: 2px 22px 2px 8px; margin-right: 10px; background: #fff; position: relative; }
+  .sel::after { content: "▾"; position: absolute; right: 6px; top: 2px; }
+  .bars { display: flex; align-items: flex-end; gap: 4px; height: 150px; margin-top: 36px; padding: 0 10px; border-bottom: 1px solid #999; }
+  .bars i { flex: 1; background: #888; display: block; }
+  .pin { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #444; border: 2px solid #fff; box-shadow: 0 0 0 1px #444; }
+  .alert { display: grid; grid-template-columns: 90px 1fr 110px; gap: 10px; padding: 8px 6px; border-bottom: 1px solid #ddd; align-items: center; }
+  .field { border: 1px solid #999; background: #fff; padding: 4px 8px; height: 26px; }
+  .fl { font-size: 11px; color: #555; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+<h1>RFID scan dashboard — wireframes</h1>
+<p class="intro">Low-fidelity layout of the four views. Every view shares the top navigation; the Alerts tab shows a count of open alerts. Data refreshes automatically every few seconds. The page collapses to a single column on phones. Annotations in yellow describe behaviour.</p>
+
+<!-- ============ ACTIVITY ============ -->
+<div class="frame">
+  <h2>1 · Activity (default view)</h2>
+  <div class="nav"><span class="b">RFID Scan Log</span><span class="t on">Activity</span><span class="t">Readers</span><span class="t">Alerts <span class="pill">3</span></span><span class="t">Tags</span><span class="sp"></span><span>● live</span></div>
+  <div class="body">
+    <div class="r filters rel"><div class="box c"><span class="sel">Range: Last 24 h</span><span class="sel">Reader: All</span><span class="sel">Status: All</span><span class="btn">Reset</span></div>
+      <div class="note">Filters apply to every element below, including the map and chart.</div></div>
+    <div class="r tiles">
+      <div class="box c"><span class="lbl">Scans</span><div class="n">27</div></div>
+      <div class="box c"><span class="lbl">Authorized</span><div class="n">4</div></div>
+      <div class="box c"><span class="lbl">Denied</span><div class="n">23</div></div>
+      <div class="box c"><span class="lbl">Unique tags</span><div class="n">5</div></div>
+    </div>
+    <div class="r rel">
+      <div class="box gray c3 tall"><span class="lbl">Campus map (Leaflet / OpenStreetMap)</span>
+        <span class="pin" style="left:38%;top:45%"></span><span class="pin" style="left:52%;top:35%;width:22px;height:22px"></span><span class="pin" style="left:48%;top:62%"></span><span class="pin" style="left:66%;top:78%"></span></div>
+      <div class="box c2 tall"><span class="lbl">Scans over time (bar chart)</span>
+        <div class="bars"><i style="height:30%"></i><i style="height:30%"></i><i style="height:0"></i><i style="height:60%"></i><i style="height:100%"></i><i style="height:30%"></i><i style="height:60%"></i><i style="height:60%"></i><i style="height:100%"></i><i style="height:0"></i><i style="height:30%"></i><i style="height:100%"></i></div></div>
+      <div class="note" style="top:60px">Marker size = scan count for that reader. Clicking a marker sets the Reader filter. Bars are hourly for ≤ 24 h, daily otherwise; hover shows the count.</div>
+    </div>
+    <div class="box rel"><span class="lbl">Scan history</span>
+      <div class="table" style="grid-template-columns: 1.3fr 1.2fr 1fr 0.8fr 1.4fr 1.2fr; margin-top:16px">
+        <div class="h">Time</div><div class="h">Tag UID</div><div class="h">Owner</div><div class="h">Reader</div><div class="h">Location</div><div class="h">Status</div>
+        <div>Sep 20, 10:38 PM</div><div>DE AD BE EF</div><div>Kripal M.</div><div>rack-02</div><div>Hayden Library</div><div><span class="pill">✓ Authorized</span></div>
+        <div>Sep 20, 10:05 PM</div><div>7E 8F 9A 0B</div><div>unregistered</div><div>rack-04</div><div>Sun Devil Fitness</div><div><span class="pill">✕ Denied · unregistered</span></div>
+        <div>Sep 20, 7:34 PM</div><div>1F 2E 3D 4C</div><div>Former student</div><div>rack-03</div><div>Engineering Center</div><div><span class="pill">✕ Denied · revoked</span></div>
+      </div>
+      <div class="note" style="top:0">Newest first. Reader location comes from readers.json; an unknown reader ID is shown in red. Status includes the reason for a denial.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ READERS ============ -->
+<div class="frame">
+  <h2>2 · Readers</h2>
+  <div class="nav"><span class="b">RFID Scan Log</span><span class="t">Activity</span><span class="t on">Readers</span><span class="t">Alerts <span class="pill">3</span></span><span class="t">Tags</span><span class="sp"></span><span>● live</span></div>
+  <div class="body">
+    <div class="r rel">
+      <div class="box gray c tall" style="height:260px"><span class="lbl">Campus map — markers coloured by status</span>
+        <span class="pin" style="left:38%;top:45%"></span><span class="pin" style="left:52%;top:35%"></span><span class="pin" style="left:48%;top:62%"></span><span class="pin" style="left:66%;top:78%;background:#fff"></span>
+        <div style="position:absolute;bottom:6px;left:8px;font-size:11px">● online &nbsp; ○ offline &nbsp; ◌ never seen</div></div>
+      <div class="box c" style="height:260px"><span class="lbl">Status table</span>
+        <div class="table" style="grid-template-columns: 0.8fr 1.4fr 0.9fr 1fr 0.7fr 0.7fr; margin-top:16px; font-size:12px">
+          <div class="h">Reader</div><div class="h">Location</div><div class="h">Status</div><div class="h">Last seen</div><div class="h">Scans</div><div class="h">Denied</div>
+          <div>rack-01</div><div>Memorial Union</div><div>● online</div><div>5 s ago</div><div>12</div><div>9</div>
+          <div>rack-02</div><div>Hayden Library</div><div>● online</div><div>12 s ago</div><div>8</div><div>6</div>
+          <div>rack-03</div><div>Engineering Center</div><div>● online</div><div>20 s ago</div><div>4</div><div>3</div>
+          <div>rack-04</div><div>Sun Devil Fitness</div><div>○ offline</div><div>1 h ago</div><div>3</div><div>3</div>
+        </div>
+        <p style="font-size:11px;color:#555;margin:10px 0 0">A reader is offline after 2 min without a heartbeat or scan.</p></div>
+      <div class="note" style="top:0">Each reader sends a heartbeat every 30 s. Going offline raises a critical alert; coming back clears it automatically.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ALERTS ============ -->
+<div class="frame">
+  <h2>3 · Alerts</h2>
+  <div class="nav"><span class="b">RFID Scan Log</span><span class="t">Activity</span><span class="t">Readers</span><span class="t on">Alerts <span class="pill">3</span></span><span class="t">Tags</span><span class="sp"></span><span>● live</span></div>
+  <div class="body">
+    <div class="r rel"><div class="box c" style="padding:6px 10px"><span class="sel">Severity: All</span><span class="sel">Type: All</span>☐ Show acknowledged<span class="btn" style="float:right">Acknowledge all</span></div>
+      <div class="note">Types: denied scan, repeated denials (≥ 3 in 10 min), unknown reader, reader offline.</div></div>
+    <div class="box rel"><span class="lbl">Open alerts · 3</span>
+      <div style="margin-top:16px">
+        <div class="alert"><span class="pill">⛔ critical</span><div><b>Tag 7E8F9A0B denied 3 times in 10 minutes (last at Hayden Library)</b><br><small>Repeated denials · Sep 20, 10:38 PM · rack-02</small></div><span class="btn">Acknowledge</span></div>
+        <div class="alert"><span class="pill">⛔ critical</span><div><b>Sun Devil Fitness Complex (rack-04) has not reported since 9:38 PM</b><br><small>Reader offline · Sep 20, 10:39 PM</small></div><span class="btn">Acknowledge</span></div>
+        <div class="alert"><span class="pill">⚠ serious</span><div><b>Scan received from reader 'rack-99', which is not in readers.json</b><br><small>Unknown reader · Sep 20, 10:08 PM</small></div><span class="btn">Acknowledge</span></div>
+        <div class="alert"><span class="pill">△ warning</span><div><b>Denied unregistered tag A1B2C3D4 at Memorial Union</b><br><small>Denied scan · Sep 20, 9:54 PM · rack-01</small></div><span class="btn">Acknowledge</span></div>
+      </div>
+      <div class="note" style="top:0">Newest first. Acknowledging hides an alert and lowers the count in the nav. The count updates live on every view.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TAGS ============ -->
+<div class="frame">
+  <h2>4 · Tags (registry)</h2>
+  <div class="nav"><span class="b">RFID Scan Log</span><span class="t">Activity</span><span class="t">Readers</span><span class="t">Alerts <span class="pill">3</span></span><span class="t on">Tags</span><span class="sp"></span><span>● live</span></div>
+  <div class="body">
+    <div class="r rel">
+      <div class="box c"><span class="lbl">Register a tag</span>
+        <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:8px;margin-top:18px;align-items:end">
+          <div><div class="fl">UID (hex)</div><div class="field">DE AD BE EF</div></div>
+          <div><div class="fl">Owner</div><div class="field">Student name</div></div>
+          <div><div class="fl">Label</div><div class="field">Bike description</div></div>
+          <span class="btn p">Add</span></div></div>
+      <div class="box c"><span class="lbl">Seen but not registered</span>
+        <div class="table" style="grid-template-columns: 1.2fr 1fr 1.3fr 0.6fr auto; margin-top:16px; font-size:12px">
+          <div class="h">UID</div><div class="h">Last seen</div><div class="h">At</div><div class="h">Scans</div><div class="h"></div>
+          <div>7E 8F 9A 0B</div><div>1 min ago</div><div>Hayden Library</div><div>7</div><div><span class="btn p">Register</span></div>
+          <div>A1 B2 C3 D4</div><div>30 min ago</div><div>rack-99</div><div>5</div><div><span class="btn p">Register</span></div>
+        </div></div>
+      <div class="note" style="top:0">Workflow: tap a new card on any reader, it appears here, click Register to prefill the UID, add the owner, save.</div>
+    </div>
+    <div class="box rel"><span class="lbl">Registry</span>
+      <div class="table" style="grid-template-columns: 1.2fr 1fr 1.2fr 1fr 0.9fr 0.9fr 0.5fr auto; margin-top:16px; font-size:12px">
+        <div class="h">UID</div><div class="h">Owner</div><div class="h">Label</div><div class="h">Status</div><div class="h">Added</div><div class="h">Last seen</div><div class="h">Scans</div><div class="h"></div>
+        <div>DE AD BE EF</div><div>Kripal M.</div><div>Blue Trek FX</div><div><span class="pill">✓ Authorized</span></div><div>Sep 10</div><div>2 min ago</div><div>20</div><div><span class="btn">Revoke</span> <span class="btn">Delete</span></div>
+        <div>04 A3 B2 C1</div><div>Nihar R.</div><div>Black Specialized</div><div><span class="pill">✓ Authorized</span></div><div>Sep 10</div><div>3 h ago</div><div>15</div><div><span class="btn">Revoke</span> <span class="btn">Delete</span></div>
+        <div>1F 2E 3D 4C</div><div>Former student</div><div>Returned bike</div><div><span class="pill">⊘ Revoked</span></div><div>Sep 10</div><div>1 d ago</div><div>6</div><div><span class="btn">Restore</span> <span class="btn">Delete</span></div>
+      </div>
+      <div class="note" style="top:0">Revoke keeps the tag on file but denies it (alerts as "revoked"). Delete removes it from the registry; scan history is kept. Delete asks for confirmation.</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

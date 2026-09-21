@@ -43,17 +43,41 @@ wiring below; if the serial output reports `RC522 not responding`, compare the t
 
 # Scan Dashboard
 
-The `dashboard/` folder contains a small web dashboard that logs every tag read together
-with the location of the reader that saw it. Readers are mounted at fixed bike racks, so
-each reader ID maps to a known campus coordinate in `dashboard/readers.json`.
+The `dashboard/` folder contains a web dashboard that logs every tag read together with the
+location of the reader that saw it, keeps the registry of authorized tags, and raises alerts.
+Readers are mounted at fixed bike racks, so each reader ID maps to a known campus coordinate
+in `dashboard/readers.json`.
 
 ```
 dashboard/
-  server.py         HTTP server + SQLite log + REST API (Python 3 standard library only)
-  index.html        Dashboard page: stat tiles, campus map, scans-over-time chart, scan table
+  server.py         HTTP server, SQLite database, REST API (Python 3 standard library only)
+  index.html        Single-page dashboard with four views: Activity, Readers, Alerts, Tags
   readers.json      Reader ID -> name / latitude / longitude
-  serial_bridge.py  Forwards SCAN lines from the Pico's USB serial port to the server
+  serial_bridge.py  Forwards SCAN and HB lines from the Pico's USB serial port to the server
+docs/
+  wireframes.html   Low-fidelity wireframes of the four views (wireframes.png is the rendered copy)
 ```
+
+## Views
+
+- **Activity**: stat tiles, campus map with a marker per reader sized by scan count, scans-over-time
+  chart, and the scan history table. Filter by time range, reader and status.
+- **Readers**: map with markers coloured by status, plus a table with last contact and today's counts.
+  A reader is offline after 2 minutes without a heartbeat or scan.
+- **Alerts**: denied scans, repeated denials (3 or more in 10 minutes), scans from unknown readers,
+  and readers going offline. Alerts can be acknowledged one at a time or all at once; the open
+  count is shown in the navigation bar.
+- **Tags**: the registry. Register a tag with its owner and label, revoke or restore it, delete it.
+  Tags that have been seen by a reader but are not registered are listed with a one-click
+  Register button.
+
+## How authorization works
+
+The server owns the tag registry and makes the final decision for every scan: a registered,
+authorized tag is accepted; a revoked or unregistered tag is denied and an alert is raised.
+The firmware still carries its own `AUTHORIZED_UID` for the physical unlock; until the reader
+talks to the server directly over Wi-Fi, keep the two in agreement. The serial bridge prints a
+warning whenever they disagree.
 
 ## Running it
 
@@ -61,7 +85,7 @@ dashboard/
 
    ```
    cd dashboard
-   python3 server.py            # add --demo to seed sample data
+   python3 server.py            # add --demo to seed sample tags, scans and alerts
    ```
 
    Open http://localhost:8080.
@@ -73,8 +97,8 @@ dashboard/
    python3 serial_bridge.py
    ```
 
-   Every tag read prints `SCAN,<reader_id>,<uid>,<1|0>` on the Pico's serial port; the
-   bridge posts it to the server and it appears on the dashboard within a few seconds.
+   The firmware prints `SCAN,<reader_id>,<uid>,<1|0>` for every tag read and `HB,<reader_id>`
+   every 30 seconds. The bridge forwards both to the server.
 
 ## Adding a reader
 
@@ -86,10 +110,19 @@ dashboard/
 
 | Method | Path | Body / query |
 | :--- | :--- | :--- |
-| `POST` | `/api/scans` | `{"reader_id": "rack-01", "uid": "DEADBEEF", "authorized": true}` |
+| `POST` | `/api/scans` | `{"reader_id": "rack-01", "uid": "DEADBEEF", "device_authorized": true}` |
 | `GET` | `/api/scans` | `?since=<ISO-8601>&limit=<n>` |
-| `GET` | `/api/readers` | |
-| `DELETE` | `/api/scans` | clears the log |
+| `DELETE` | `/api/scans` | clears scans and alerts |
+| `POST` | `/api/heartbeat` | `{"reader_id": "rack-01"}` |
+| `GET` | `/api/readers` | readers with status, last seen and today's counts |
+| `GET` | `/api/tags` | registry with scan counts |
+| `POST` | `/api/tags` | `{"uid": "DEADBEEF", "owner": "Name", "label": "Bike"}` |
+| `PUT` | `/api/tags/<uid>` | any of `owner`, `label`, `notes`, `authorized` |
+| `DELETE` | `/api/tags/<uid>` | |
+| `GET` | `/api/tags/unregistered` | UIDs seen by readers but not registered |
+| `GET` | `/api/alerts` | `?include_acked=1` |
+| `POST` | `/api/alerts/<id>/ack` | |
+| `POST` | `/api/alerts/ack_all` | |
 
 Run the server with `--host 0.0.0.0` if a Pico on the same Wi-Fi network should post to it
 directly instead of going through the serial bridge.

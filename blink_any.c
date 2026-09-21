@@ -38,6 +38,9 @@
 // reader (a halted card does not answer REQA anyway; this covers cards that
 // fail to halt).
 #define REREAD_HOLDOFF_MS     1500
+// Heartbeat interval. The dashboard marks a reader offline when it stops
+// hearing these (see dashboard/server.py OFFLINE_AFTER_S).
+#define HEARTBEAT_MS          30000
 
 // Identifier of this reader station. Each physical reader is bolted to a known
 // bike rack; the dashboard maps this ID to a campus location (dashboard/readers.json).
@@ -116,11 +119,19 @@ int main(void) {
     printf("Waiting for cards...\n");
 
     absolute_time_t next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
+    absolute_time_t next_heartbeat = get_absolute_time();
     absolute_time_t reread_allowed_at = get_absolute_time();
     uint32_t consecutive_failures = 0;
 
     while (true) {
         sleep_ms(POLL_INTERVAL_MS);
+
+        // Machine-readable liveness line for dashboard/serial_bridge.py:
+        //   HB,<reader_id>
+        if (time_reached(next_heartbeat)) {
+            next_heartbeat = make_timeout_time_ms(HEARTBEAT_MS);
+            printf("HB,%s\n", READER_ID);
+        }
 
         // Periodically confirm the chip still has our configuration. Only
         // re-init when it has actually been lost, instead of blindly resetting
