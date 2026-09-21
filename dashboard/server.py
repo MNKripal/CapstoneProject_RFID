@@ -292,6 +292,8 @@ class Handler(SimpleHTTPRequestHandler):
     ]
 
     def _dispatch(self, method):
+        """Handle an API request. Returns True if a response was sent, False if
+        the path is not an API path (so the caller may serve a static file)."""
         url = urlparse(self.path)
         for m, pattern, name in self.ROUTES:
             if m != method:
@@ -299,22 +301,28 @@ class Handler(SimpleHTTPRequestHandler):
             match = re.match(pattern, url.path)
             if match:
                 try:
-                    return getattr(self, name)(parse_qs(url.query), *match.groups())
+                    getattr(self, name)(parse_qs(url.query), *match.groups())
                 except (KeyError, ValueError, json.JSONDecodeError) as e:
-                    return self._json(400, {"error": f"bad request: {e}"})
+                    self._json(400, {"error": f"bad request: {e}"})
+                return True
         if url.path.startswith("/api/"):
-            return self._json(404, {"error": "not found"})
-        return None
+            self._json(404, {"error": "not found"})
+            return True
+        return False
 
     def do_GET(self):
-        if self._dispatch("GET") is None:
+        if not self._dispatch("GET"):
             if urlparse(self.path).path == "/":
                 self.path = "/index.html"
             super().do_GET()
 
-    def do_POST(self):   self._dispatch("POST")
-    def do_PUT(self):    self._dispatch("PUT")
-    def do_DELETE(self): self._dispatch("DELETE")
+    def _api_only(self, method):
+        if not self._dispatch(method):
+            self._json(404, {"error": "not found"})
+
+    def do_POST(self):   self._api_only("POST")
+    def do_PUT(self):    self._api_only("PUT")
+    def do_DELETE(self): self._api_only("DELETE")
 
     # ---- scans
     def get_scans(self, q):
