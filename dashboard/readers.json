@@ -1,0 +1,9 @@
+{
+  "_comment": "One entry per physical reader station. The id must match READER_ID in blink_any.c. Coordinates are approximate ASU Tempe rack locations; adjust to where each reader is actually mounted.",
+  "readers": [
+    { "id": "rack-01", "name": "Memorial Union",            "lat": 33.41760, "lon": -111.93430 },
+    { "id": "rack-02", "name": "Hayden Library",            "lat": 33.41890, "lon": -111.93500 },
+    { "id": "rack-03", "name": "Engineering Center (ECG)",  "lat": 33.41970, "lon": -111.93230 },
+    { "id": "rack-04", "name": "Sun Devil Fitness Complex", "lat": 33.41600, "lon": -111.93150 }
+  ]
+}

@@ -40,3 +40,56 @@ wiring below; if the serial output reports `RC522 not responding`, compare the t
 | **RST** | GPIO 0 | Pin 1 |
 | **3.3V** | 3V3 | Pin 36 | 
 
+
+# Scan Dashboard
+
+The `dashboard/` folder contains a small web dashboard that logs every tag read together
+with the location of the reader that saw it. Readers are mounted at fixed bike racks, so
+each reader ID maps to a known campus coordinate in `dashboard/readers.json`.
+
+```
+dashboard/
+  server.py         HTTP server + SQLite log + REST API (Python 3 standard library only)
+  index.html        Dashboard page: stat tiles, campus map, scans-over-time chart, scan table
+  readers.json      Reader ID -> name / latitude / longitude
+  serial_bridge.py  Forwards SCAN lines from the Pico's USB serial port to the server
+```
+
+## Running it
+
+1. Start the server (creates `dashboard/scans.db` on first run):
+
+   ```
+   cd dashboard
+   python3 server.py            # add --demo to seed sample data
+   ```
+
+   Open http://localhost:8080.
+
+2. Plug in the Pico and start the serial bridge in a second terminal:
+
+   ```
+   python3 -m pip install pyserial     # once
+   python3 serial_bridge.py
+   ```
+
+   Every tag read prints `SCAN,<reader_id>,<uid>,<1|0>` on the Pico's serial port; the
+   bridge posts it to the server and it appears on the dashboard within a few seconds.
+
+## Adding a reader
+
+- Set `READER_ID` at the top of `blink_any.c` to a unique ID (for example `rack-02`) and
+  flash that board.
+- Add a matching entry with the rack's coordinates to `dashboard/readers.json`.
+
+## API
+
+| Method | Path | Body / query |
+| :--- | :--- | :--- |
+| `POST` | `/api/scans` | `{"reader_id": "rack-01", "uid": "DEADBEEF", "authorized": true}` |
+| `GET` | `/api/scans` | `?since=<ISO-8601>&limit=<n>` |
+| `GET` | `/api/readers` | |
+| `DELETE` | `/api/scans` | clears the log |
+
+Run the server with `--host 0.0.0.0` if a Pico on the same Wi-Fi network should post to it
+directly instead of going through the serial bridge.

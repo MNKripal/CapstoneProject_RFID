@@ -39,6 +39,10 @@
 // fail to halt).
 #define REREAD_HOLDOFF_MS     1500
 
+// Identifier of this reader station. Each physical reader is bolted to a known
+// bike rack; the dashboard maps this ID to a campus location (dashboard/readers.json).
+#define READER_ID "rack-01"
+
 static const uint8_t AUTHORIZED_UID[] = {0xDE, 0xAD, 0xBE, 0xEF};
 #define AUTHORIZED_UID_LEN (sizeof(AUTHORIZED_UID) / sizeof(AUTHORIZED_UID[0]))
 
@@ -157,11 +161,20 @@ int main(void) {
         consecutive_failures = 0;
         print_uid(&mfrc->uid);
 
-        if (uid_is_authorized(&mfrc->uid)) {
+        bool authorized = uid_is_authorized(&mfrc->uid);
+        if (authorized) {
             printf(">>> AUTHORIZED: Bicycle Unlocked!\n");
         } else {
             printf(">>> DENIED: Unauthorized Tag.\n");
         }
+
+        // Machine-readable log line consumed by dashboard/serial_bridge.py:
+        //   SCAN,<reader_id>,<uid hex without spaces>,<1 if authorized else 0>
+        printf("SCAN,%s,", READER_ID);
+        for (uint8_t i = 0; i < mfrc->uid.size; i++) {
+            printf("%02X", mfrc->uid.uidByte[i]);
+        }
+        printf(",%d\n", authorized ? 1 : 0);
 
         // Put the card to sleep so it is not reported again until removed
         // and re-presented, and leave the reader in a clean state.
