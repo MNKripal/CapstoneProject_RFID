@@ -39,7 +39,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 print = functools.partial(print, flush=True)  # show log lines immediately even when piped
@@ -230,6 +230,13 @@ def seed_demo(db):
 
 # --------------------------------------------------------------------------- HTTP
 class Handler(SimpleHTTPRequestHandler):
+    # Browsers open idle "preconnect" sockets and keep-alive connections. With a
+    # single-threaded server one idle socket blocks every other request, so the
+    # dashboard appears frozen. Each connection therefore gets its own thread and
+    # is dropped after a few idle seconds.
+    timeout = 10
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=HERE, **kwargs)
 
@@ -240,9 +247,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def end_headers(self):
+        # Static files (index.html) and API responses alike: always revalidate, so an
+        # updated dashboard is picked up on the next reload instead of a cached copy.
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
 
     def _body(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -472,7 +484,8 @@ def main():
     db.close()
 
     try:
-        srv = HTTPServer((args.host, args.port), Handler)
+        srv = ThreadingHTTPServer((args.host, args.port), Handler)
+        srv.daemon_threads = True
     except OSError as e:
         sys.exit(f"Could not listen on port {args.port} ({e.strerror}). "
                  f"Another program is using it; try:  python3 server.py --port {args.port + 1}")

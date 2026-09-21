@@ -133,6 +133,8 @@
   form.inline label { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: 12px; }
   @media (max-width: 760px) { form.inline { grid-template-columns: 1fr 1fr; } form.inline button { grid-column: span 2; } }
   .msg-ok { color: var(--good); font-size: 13px; margin-top: 8px; } .msg-err { color: var(--critical); font-size: 13px; margin-top: 8px; }
+  #banner { background: var(--critical-bg); color: var(--critical); border-bottom: 1px solid var(--critical); padding: 10px 24px; font-weight: 500; }
+  #banner[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -146,6 +148,7 @@
   <span class="live" id="live">connecting…</span>
 </nav>
 
+<div id="banner" hidden></div>
 <main>
 <!-- ============================ ACTIVITY ============================ -->
 <section data-view="activity">
@@ -281,6 +284,13 @@
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || res.statusText);
     return j;
+  };
+
+  const banner = (msg) => { const b = $('banner'); b.textContent = msg || ''; b.hidden = !msg; };
+  // Run a user action; if the request fails, say so instead of failing silently.
+  const act = async (fn, what) => {
+    try { await fn(); banner(''); }
+    catch (e) { banner(`${what} failed: ${e.message}. Is the server running the current server.py? Restart it and reload this page.`); console.error(what, e); }
   };
 
   // ---------- state ----------
@@ -489,11 +499,11 @@
     const open = alerts.filter(a => !a.acknowledged).length;
     $('alerts-sub').textContent = `· ${open} open`;
     $('alert-count').textContent = open; $('alert-count').hidden = open === 0;
-    $('alert-list').querySelectorAll('[data-ack]').forEach(b => b.addEventListener('click', async () => {
+    $('alert-list').querySelectorAll('[data-ack]').forEach(b => b.addEventListener('click', () => act(async () => {
       await api(`/api/alerts/${b.dataset.ack}/ack`, { method: 'POST' }); await loadAlerts(); renderAlerts();
-    }));
+    }, 'Acknowledging the alert')));
   }
-  $('ack-all').addEventListener('click', async () => { await api('/api/alerts/ack_all', { method: 'POST' }); await loadAlerts(); renderAlerts(); });
+  $('ack-all').addEventListener('click', () => act(async () => { await api('/api/alerts/ack_all', { method: 'POST' }); await loadAlerts(); renderAlerts(); }, 'Acknowledging all alerts'));
   ['alert-sev', 'alert-type', 'alert-acked'].forEach(id => $(id).addEventListener('change', async () => { await loadAlerts(); renderAlerts(); }));
 
   // ---------- TAGS ----------
@@ -511,14 +521,17 @@
       <td class="actions"><button class="small primary" data-reg="${u.uid}">Register</button></td></tr>`).join('');
     $('unreg-empty').hidden = unregistered.length > 0;
     $('unreg-sub').textContent = `· ${unregistered.length}`;
-    $('tag-rows').querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', async () => {
-      await api(`/api/tags/${b.dataset.toggle}`, { method: 'PUT', body: JSON.stringify({ authorized: b.dataset.auth === '1' }) });
+    $('tag-rows').querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => act(async () => {
+      const restore = b.dataset.auth === '1';
+      await api(`/api/tags/${b.dataset.toggle}`, { method: 'PUT', body: JSON.stringify({ authorized: restore }) });
       await refreshTags();
-    }));
-    $('tag-rows').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      const msg = $('tag-form-msg'); msg.className = 'msg-ok';
+      msg.textContent = `${spacedUid(b.dataset.toggle)} is now ${restore ? 'authorized' : 'revoked'}. Existing scans keep the status they had at the time.`;
+    }, 'Updating the tag')));
+    $('tag-rows').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => act(async () => {
       if (!confirm(`Delete tag ${spacedUid(b.dataset.del)} from the registry? Its scan history is kept.`)) return;
       await api(`/api/tags/${b.dataset.del}`, { method: 'DELETE' }); await refreshTags();
-    }));
+    }, 'Deleting the tag')));
     $('unreg-rows').querySelectorAll('[data-reg]').forEach(b => b.addEventListener('click', () => {
       $('f-uid').value = spacedUid(b.dataset.reg); $('f-owner').focus();
     }));
@@ -572,7 +585,8 @@
   $('reset').addEventListener('click', () => { $('range').value = '24h'; $('reader').value = ''; $('status').value = ''; renderActivity(); });
   window.addEventListener('resize', () => { if (view === 'activity') renderChart(filteredScans()); });
 
-  loadReaders().then(refreshTags).then(() => { route(); return poll(); }).then(() => setInterval(poll, POLL_MS));
+  loadReaders().then(refreshTags).then(() => { route(); return poll(); }).then(() => setInterval(poll, POLL_MS))
+    .catch(e => { banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
 })();
 </script>
 </body>
