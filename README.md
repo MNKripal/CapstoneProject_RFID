@@ -1,128 +1,170 @@
-# RFID Logging System (Pico 2 W)
+# Smart Bike Rack: RFID Access Logging on the Raspberry Pi Pico 2 W
 
-A high-performance embedded logging system built for the Raspberry Pi Pico 2 W (RP2350). This project utilizes the MFRC522 RFID module to scan physical tags, process their unique identifiers (UIDs), and log the data.
+**Capstone Project, Arizona State University (Tempe campus)**
+Team: Kripal Mogala, Nihar Reddy
 
-# Features
-- Hardware: Optimized for the RP2350 (Cortex-M33) architecture.
-- Communication: SPI-based communication with the RC522 module.
-- Logging: Real-time hex UID output via USB-CDC (Serial Monitor).
-- Feedback: Visual confirmation of tag detection via internal hardware polling.
+## What this project does
 
-# Hardware Setup
+Bikes on campus get an RFID tag. Each bike rack gets a small reader built from a
+Raspberry Pi Pico 2 W and an MFRC522 RFID module. When a student taps their tag,
+the reader checks whether the tag is authorized and every tap is logged to a web
+dashboard that shows **who** tapped, **when**, and **where** on campus.
 
-Hardware Target
-- Board: Raspberry Pi Pico 2 W
-- RFID Reader Module: MFRC522 RFID Module
-- Processor: RP2350 (Dual-core ARM Cortex-M33)
+Because the readers are bolted to fixed racks, the location of a scan is simply
+the location of the reader that saw it. No GPS is needed.
 
-# Development Environment
+## Features
 
-This project was developed and tested under the following environment:
-Host System
-- IDE: Visual Studio Code
-- Extensions:
-  * Raspberry Pi Pico VS Code Extension
-  * CMake Tools
+- Reads ISO 14443-A tags (MIFARE Classic and similar) over SPI with the MFRC522.
+- Recovers automatically if the reader chip loses its configuration.
+- Prints every scan and a heartbeat over USB so a computer can log them.
+- Web dashboard with four screens:
+  - **Activity**: totals, campus map, scans-over-time chart, full scan history.
+  - **Readers**: which readers are online, where they are, today's counts.
+  - **Alerts**: denied scans, repeated denials, unknown readers, readers offline.
+  - **Tags**: the registry of authorized tags, with revoke, restore and delete.
+- Works on a laptop or a phone, in light or dark mode.
 
-# MFRC522 to Pico 2 W Wiring
+## Hardware
 
-The firmware's pin assignments are defined in one place, at the top of `blink_any.c`
-(`PIN_CS`, `PIN_SCK`, `PIN_MOSI`, `PIN_MISO`, `PIN_RST`). They must match the physical
-wiring below; if the serial output reports `RC522 not responding`, compare the two.
+| Part | Notes |
+| :--- | :--- |
+| Raspberry Pi Pico 2 W | RP2350, dual-core Cortex-M33, Wi-Fi |
+| MFRC522 RFID module | 13.56 MHz reader, SPI interface |
+| RFID tags | MIFARE Classic 1K cards or key fobs |
+| Jumper wires, breadboard | |
 
-| MFRC522 Pin | Pico 2 W GPIO | Physical Pin |
+### Wiring
+
+The pin numbers used by the firmware are defined in one place at the top of
+`blink_any.c`. The table below matches those defaults.
+
+| MFRC522 pin | Pico 2 W GPIO | Physical pin |
 | :--- | :--- | :--- |
-| **SDA** | GPIO 1 | Pin 2 |
-| **SCK** | GPIO 2 | Pin 4 |
-| **MOSI** | GPIO 3 | Pin 5 |
-| **MISO** | GPIO 4 | Pin 6 |
-| **GND** | GND | Pin 38 |
-| **RST** | GPIO 0 | Pin 1 |
-| **3.3V** | 3V3 | Pin 36 | 
+| SDA (NSS) | GPIO 5 | Pin 7 |
+| SCK | GPIO 2 | Pin 4 |
+| MOSI | GPIO 3 | Pin 5 |
+| MISO | GPIO 4 | Pin 6 |
+| RST | GPIO 15 | Pin 20 |
+| 3.3V | 3V3 OUT | Pin 36 |
+| GND | GND | Pin 38 |
 
+Power the module from 3.3 V only. If the serial output says
+`RC522 not responding`, compare the wires against this table first.
 
-# Scan Dashboard
+## Software you need
 
-The `dashboard/` folder contains a web dashboard that logs every tag read together with the
-location of the reader that saw it, keeps the registry of authorized tags, and raises alerts.
-Readers are mounted at fixed bike racks, so each reader ID maps to a known campus coordinate
-in `dashboard/readers.json`.
+- Visual Studio Code with the **Raspberry Pi Pico** extension (installs the Pico SDK,
+  CMake, Ninja and the ARM toolchain for you).
+- Python 3.9 or newer for the dashboard.
+- `pyserial` for the USB bridge: `python3 -m pip install pyserial`
+
+## Getting started
+
+### 1. Flash the firmware
+
+1. Open this folder in VS Code and let the Pico extension configure the project.
+2. Set `READER_ID` at the top of `blink_any.c` to a unique name for this rack, for
+   example `rack-01`.
+3. Set `AUTHORIZED_UID` to your tag's UID (you can read it from the serial output
+   the first time you tap it).
+4. Build, hold BOOTSEL while plugging the Pico in, and copy `blink_any.uf2` to it.
+
+Open a serial monitor at 115200 baud. You should see the reader initialize and
+then a line per tap, like:
 
 ```
-dashboard/
-  server.py         HTTP server, SQLite database, REST API (Python 3 standard library only)
-  index.html        Single-page dashboard with four views: Activity, Readers, Alerts, Tags
-  readers.json      Reader ID -> name / latitude / longitude
-  serial_bridge.py  Forwards SCAN and HB lines from the Pico's USB serial port to the server
-docs/
-  wireframes.html   Low-fidelity wireframes of the four views (wireframes.png is the rendered copy)
+Card UID: DE AD BE EF  (SAK 0x08, MIFARE 1KB)
+>>> AUTHORIZED: Bicycle Unlocked!
+SCAN,rack-01,DEADBEEF,1
 ```
 
-## Views
+### 2. Start the dashboard
 
-- **Activity**: stat tiles, campus map with a marker per reader sized by scan count, scans-over-time
-  chart, and the scan history table. Filter by time range, reader and status.
-- **Readers**: map with markers coloured by status, plus a table with last contact and today's counts.
-  A reader is offline after 2 minutes without a heartbeat or scan.
-- **Alerts**: denied scans, repeated denials (3 or more in 10 minutes), scans from unknown readers,
-  and readers going offline. Alerts can be acknowledged one at a time or all at once; the open
-  count is shown in the navigation bar.
-- **Tags**: the registry. Register a tag with its owner and label, revoke or restore it, delete it.
-  Tags that have been seen by a reader but are not registered are listed with a one-click
-  Register button.
+```
+cd dashboard
+python3 server.py
+```
+
+Open http://localhost:8080 in a browser. Add `--demo` the first time to see
+sample data. If the port is busy, add `--port 8081`.
+
+### 3. Connect the reader to the dashboard
+
+In a second terminal, with the Pico plugged in:
+
+```
+cd dashboard
+python3 serial_bridge.py
+```
+
+The bridge reads the Pico's serial output and forwards each `SCAN` and heartbeat
+line to the server. Taps show up on the dashboard within a few seconds.
+
+### 4. Register tags and readers
+
+- In the dashboard's **Tags** tab, tap a new card on a reader, then click
+  **Register** next to it and enter the owner's name.
+- Add each reader's rack location to `dashboard/readers.json` with its `READER_ID`.
 
 ## How authorization works
 
-The server owns the tag registry and makes the final decision for every scan: a registered,
-authorized tag is accepted; a revoked or unregistered tag is denied and an alert is raised.
-The firmware still carries its own `AUTHORIZED_UID` for the physical unlock; until the reader
-talks to the server directly over Wi-Fi, keep the two in agreement. The serial bridge prints a
-warning whenever they disagree.
+The server keeps the tag registry and makes the final decision on every scan:
+a registered, authorized tag is accepted; a revoked or unregistered tag is denied
+and an alert is raised. The firmware also has its own `AUTHORIZED_UID` for the
+physical unlock. Until the reader talks to the server directly over Wi-Fi, keep
+the two in agreement. The bridge prints a warning if they disagree.
 
-## Running it
+## Project layout
 
-1. Start the server (creates `dashboard/scans.db` on first run):
+```
+blink_any.c            Firmware: reader loop, authorization, SCAN and HB serial lines
+mfrc522.c / mfrc522.h  MFRC522 driver (SPI register access, anticollision, select)
+CMakeLists.txt         Pico SDK build configuration
+dashboard/
+  server.py            Web server, SQLite database and REST API (standard library only)
+  index.html           The dashboard page (HTML, CSS, JavaScript, Leaflet map)
+  readers.json         Reader ID -> name, latitude, longitude
+  serial_bridge.py     Forwards serial output from the Pico to the server
+docs/
+  wireframes.html      Wireframes of the four dashboard views (wireframes.png is rendered)
+```
 
-   ```
-   cd dashboard
-   python3 server.py            # add --demo to seed sample tags, scans and alerts
-   ```
+## REST API
 
-   Open http://localhost:8080.
-
-2. Plug in the Pico and start the serial bridge in a second terminal:
-
-   ```
-   python3 -m pip install pyserial     # once
-   python3 serial_bridge.py
-   ```
-
-   The firmware prints `SCAN,<reader_id>,<uid>,<1|0>` for every tag read and `HB,<reader_id>`
-   every 30 seconds. The bridge forwards both to the server.
-
-## Adding a reader
-
-- Set `READER_ID` at the top of `blink_any.c` to a unique ID (for example `rack-02`) and
-  flash that board.
-- Add a matching entry with the rack's coordinates to `dashboard/readers.json`.
-
-## API
-
-| Method | Path | Body / query |
+| Method | Path | Purpose |
 | :--- | :--- | :--- |
-| `POST` | `/api/scans` | `{"reader_id": "rack-01", "uid": "DEADBEEF", "device_authorized": true}` |
-| `GET` | `/api/scans` | `?since=<ISO-8601>&limit=<n>` |
-| `DELETE` | `/api/scans` | clears scans and alerts |
-| `POST` | `/api/heartbeat` | `{"reader_id": "rack-01"}` |
-| `GET` | `/api/readers` | readers with status, last seen and today's counts |
-| `GET` | `/api/tags` | registry with scan counts |
-| `POST` | `/api/tags` | `{"uid": "DEADBEEF", "owner": "Name", "label": "Bike"}` |
-| `PUT` | `/api/tags/<uid>` | any of `owner`, `label`, `notes`, `authorized` |
-| `DELETE` | `/api/tags/<uid>` | |
+| `POST` | `/api/scans` | Log a scan: `{"reader_id": "rack-01", "uid": "DEADBEEF"}` |
+| `GET` | `/api/scans` | List scans, newest first (`?since=`, `?limit=`) |
+| `POST` | `/api/heartbeat` | Reader is alive: `{"reader_id": "rack-01"}` |
+| `GET` | `/api/readers` | Readers with location, online status and today's counts |
+| `GET` / `POST` | `/api/tags` | List the registry / register a tag |
+| `PUT` / `DELETE` | `/api/tags/<uid>` | Update (`owner`, `label`, `authorized`) / remove a tag |
 | `GET` | `/api/tags/unregistered` | UIDs seen by readers but not registered |
-| `GET` | `/api/alerts` | `?include_acked=1` |
-| `POST` | `/api/alerts/<id>/ack` | |
-| `POST` | `/api/alerts/ack_all` | |
+| `GET` | `/api/alerts` | Open alerts (`?include_acked=1` for all) |
+| `POST` | `/api/alerts/<id>/ack` | Acknowledge one alert |
+| `POST` | `/api/alerts/ack_all` | Acknowledge all |
 
-Run the server with `--host 0.0.0.0` if a Pico on the same Wi-Fi network should post to it
-directly instead of going through the serial bridge.
+## Problems we ran into
+
+- **The reader worked only sometimes.** Three parts of the code disagreed about
+  which GPIO pins were used, the firmware reset the chip every five seconds, and
+  it did not wait for the chip's soft reset to finish before configuring it.
+  Fixed by defining pins in one place, waiting for the reset, and re-initializing
+  only when a health check shows the chip actually lost its settings.
+- **The dashboard froze in a real browser.** Browsers keep spare idle connections
+  open, which blocked the original single-threaded server. Fixed by handling each
+  connection on its own thread.
+
+## Future work
+
+- Send scans from the Pico over Wi-Fi straight to the server, so the reader can ask
+  the server whether to unlock instead of using a built-in UID.
+- Measure the real coordinates of each rack and update `readers.json`.
+- Drive a lock actuator or LED from the authorization result.
+
+## Credits
+
+The MFRC522 driver is adapted from Benjamin Modica's Pico port of the
+[miguelbalboa/rfid](https://github.com/miguelbalboa/rfid) Arduino library, which is
+in the public domain.
