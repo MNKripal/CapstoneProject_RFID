@@ -10,12 +10,13 @@
  *
  *   RC522 pin   Pico GPIO
  *   SDA (NSS)   PIN_CS
- *   SCK         PIN_SCK
- *   MOSI        PIN_MOSI
- *   MISO        PIN_MISO
+  *   MISO        PIN_MISO
  *   RST         PIN_RST
  *   3.3V        3V3 (NOT 5V)
  *   GND         GND
+ *   SCK         PIN_SCK
+ *   MOSI        PIN_MOSI
+
  *
  * SCK/MOSI/MISO must be a valid pin set for the chosen SPI_PORT
  * (spi0: SCK 2/6/18, MOSI 3/7/19, MISO 4/16/20).
