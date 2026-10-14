@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · RFID Scan Log</title>
+<link rel="stylesheet" href="portal.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login">
+    <h1>RFID Scan Log</h1>
+    <div class="sub">Campus bike rack access</div>
+    <div class="tabs">
+      <button type="button" class="on" data-tab="signin">Sign in</button>
+      <button type="button" data-tab="signup">Create student account</button>
+    </div>
+    <form id="signin">
+      <label class="field">Username<input type="text" id="si-user" autocomplete="username" required autofocus></label>
+      <label class="field">Password<input type="password" id="si-pass" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Sign in</button>
+      <div id="si-msg"></div>
+    </form>
+    <form id="signup" hidden>
+      <label class="field">Your name<input type="text" id="su-name" autocomplete="name" placeholder="Sparky Sun Devil"></label>
+      <label class="field">Username (ASURITE or email)<input type="text" id="su-user" autocomplete="username" required></label>
+      <label class="field">Password (6+ characters)<input type="password" id="su-pass" autocomplete="new-password" required minlength="6"></label>
+      <button type="submit" class="primary">Create account</button>
+      <div id="su-msg"></div>
+    </form>
+    <div class="hint">Students see the bikes registered to them. Staff accounts are created by an administrator.</div>
+  </div>
+</div>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const go = (user) => { location.replace(user.role === 'staff' ? 'index.html' : 'me.html'); };
+  const post = async (path, body) => {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || res.statusText);
+    return j;
+  };
+  // already signed in? go straight to the right page
+  fetch('/api/auth/me').then(r => r.ok ? r.json() : null).then(j => { if (j) go(j.user); }).catch(() => {});
+
+  document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+    $('signin').hidden = b.dataset.tab !== 'signin'; $('signup').hidden = b.dataset.tab !== 'signup';
+  }));
+  $('signin').addEventListener('submit', async (e) => {
+    e.preventDefault(); const m = $('si-msg'); m.className = ''; m.textContent = '';
+    try { const j = await post('/api/auth/login', { username: $('si-user').value, password: $('si-pass').value }); go(j.user); }
+    catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
+  });
+  $('signup').addEventListener('submit', async (e) => {
+    e.preventDefault(); const m = $('su-msg'); m.className = ''; m.textContent = '';
+    try { const j = await post('/api/auth/register', { username: $('su-user').value, password: $('su-pass').value, display_name: $('su-name').value }); go(j.user); }
+    catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
+  });
+})();
+</script>
+</body>
+</html>

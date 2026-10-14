@@ -1,0 +1,113 @@
+/* Shared look for login.html and me.html (index.html keeps its own copy of these tokens). */
+:root {
+  color-scheme: light;
+  --surface-0: #f5f5f3; --surface-1: #fcfcfb; --border: #e2e1dc; --grid: #ebeae6;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #86847e;
+  --series-1: #2a78d6; --series-1-soft: #cde2fb; --accent: #2a78d6;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-bg: #e6f6e6; --warning-bg: #fff4d6; --serious-bg: #fdebe3; --critical-bg: #fbe9e9; --muted-bg: #ecebe7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #2a2a27;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --series-1: #3987e5; --series-1-soft: #1c5cab; --accent: #3987e5;
+    --good-bg: #143a14; --warning-bg: #3d3010; --serious-bg: #3e2418; --critical-bg: #3e1a1a; --muted-bg: #262624;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+a { color: var(--accent); }
+h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+h2 span { color: var(--text-muted); font-weight: 400; }
+.sub { color: var(--text-secondary); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+nav.top { position: sticky; top: 0; z-index: 1500; background: var(--surface-1); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 4px; padding: 0 24px; height: 52px; }
+nav.top .brand { font-weight: 650; margin-right: 16px; white-space: nowrap; }
+nav.top a.tab { color: var(--text-secondary); text-decoration: none; padding: 0 12px; height: 52px; display: inline-flex;
+  align-items: center; gap: 6px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+nav.top a.tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+nav.top a.tab:hover { color: var(--text-primary); }
+nav.top .spacer { flex: 1; }
+nav.top .who { color: var(--text-secondary); font-size: 13px; white-space: nowrap; margin-right: 8px; }
+@media (max-width: 640px) { nav.top { padding: 0 12px; overflow-x: auto; } nav.top .brand { display: none; } }
+
+main { padding: 20px 24px 40px; max-width: 1200px; margin: 0 auto; }
+section[data-view] { display: none; }
+section[data-view].active { display: block; }
+.page-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 16px; }
+
+select, button, input[type=text], input[type=password] { font: inherit; color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--text-muted); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.small { padding: 3px 8px; font-size: 12px; }
+button.danger { color: var(--critical); }
+input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+label.field { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+.filters label { color: var(--text-secondary); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; margin-bottom: 16px; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+.row .card { margin-bottom: 0; }
+@media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.tile .k { color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.tile .v { font-size: 28px; font-weight: 650; line-height: 1.2; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.tile .d { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: middle; }
+th { color: var(--text-secondary); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+tbody tr:hover { background: var(--surface-0); }
+td.dim { color: var(--text-secondary); }
+td.actions { text-align: right; } td.actions button + button { margin-left: 6px; }
+.table-wrap { overflow-x: auto; }
+.empty { color: var(--text-muted); padding: 24px; text-align: center; }
+
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.badge.good { background: var(--good-bg); color: var(--good); }
+.badge.warning { background: var(--warning-bg); color: #8a5a00; }
+.badge.serious { background: var(--serious-bg); color: #a8471f; }
+.badge.critical { background: var(--critical-bg); color: var(--critical); }
+.badge.muted { background: var(--muted-bg); color: var(--text-secondary); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge.warning { color: var(--warning); }
+  :root:not([data-theme="light"]) .badge.serious { color: var(--serious); } }
+.msg-ok { color: var(--good); font-size: 13px; margin-top: 8px; } .msg-err { color: var(--critical); font-size: 13px; margin-top: 8px; }
+#banner { background: var(--critical-bg); color: var(--critical); border-bottom: 1px solid var(--critical); padding: 10px 24px; font-weight: 500; }
+#banner[hidden] { display: none; }
+
+.map { height: 420px; border-radius: 8px; background: var(--surface-0); }
+.leaflet-container { font: inherit; }
+.leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+.leaflet-popup-content b { display: block; margin-bottom: 2px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12px; margin-top: 8px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+
+/* bike cards (student portal) */
+.bikes { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.bike { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.bike .name { font-size: 16px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.bike .uid { color: var(--text-secondary); font-size: 12px; }
+.bike .meta { color: var(--text-secondary); font-size: 13px; }
+.bike .act { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* login */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.login { width: 100%; max-width: 380px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+.login h1 { margin-bottom: 2px; }
+.login .tabs { display: flex; gap: 0; margin: 18px 0 14px; border-bottom: 1px solid var(--border); }
+.login .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; margin-bottom: -1px; color: var(--text-secondary); padding: 8px 12px; }
+.login .tabs button.on { color: var(--text-primary); border-bottom-color: var(--accent); }
+.login form { display: flex; flex-direction: column; gap: 10px; }
+.login form[hidden] { display: none; }
+.login button.primary { margin-top: 4px; padding: 9px; }
+.login .hint { color: var(--text-muted); font-size: 12px; margin-top: 14px; }

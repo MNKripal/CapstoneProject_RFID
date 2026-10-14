@@ -1,4 +1,5 @@
 build/
 dashboard/scans.db
+dashboard/device_key.txt
 __pycache__/
 .DS_Store

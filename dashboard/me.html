@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My bikes · RFID Scan Log</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="portal.css">
+<style>
+  svg.chart { width: 100%; height: 160px; display: block; overflow: visible; }
+  svg.chart text { fill: var(--text-secondary); font-size: 11px; }
+  svg.chart .grid line { stroke: var(--grid); } svg.chart .axis line { stroke: var(--border); }
+  svg.chart .bar { fill: var(--series-1); }
+  .alertrow { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: start; }
+  .alertrow:last-child { border-bottom: 0; }
+  .alertrow .meta { color: var(--text-secondary); font-size: 12px; }
+  form.add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+  @media (max-width: 640px) { form.add { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav class="top">
+  <span class="brand">RFID Scan Log</span>
+  <a class="tab" href="#/bikes" data-tab="bikes">My bikes</a>
+  <a class="tab" href="#/activity" data-tab="activity">My activity</a>
+  <a class="tab" href="#/map" data-tab="map">My map</a>
+  <span class="spacer"></span>
+  <span class="who" id="who"></span>
+  <button type="button" class="small" id="logout">Log out</button>
+</nav>
+<div id="banner" hidden></div>
+<main>
+
+<!-- ============================ MY BIKES ============================ -->
+<section data-view="bikes">
+  <div class="page-head">
+    <div><h1>My bikes</h1><div class="sub">Tags registered to you. Report a tag lost to stop it from unlocking anything.</div></div>
+  </div>
+  <div class="bikes" id="bikes"></div>
+  <div class="empty" id="bikes-empty" hidden>No bikes yet. Tap your tag on any rack reader, then add it below.</div>
+  <div class="card" style="margin-top:16px">
+    <h2>Add a bike</h2>
+    <form class="add" id="add-form">
+      <label class="field">Tag UID (printed on the serial monitor, or ask staff)<input type="text" id="f-uid" class="mono" placeholder="DE AD BE EF" required></label>
+      <label class="field">Bike description<input type="text" id="f-label" placeholder="Blue Trek FX, basket on front"></label>
+      <button type="submit" class="primary">Add</button>
+    </form>
+    <div id="add-msg"></div>
+  </div>
+</section>
+
+<!-- ============================ MY ACTIVITY ============================ -->
+<section data-view="activity">
+  <div class="page-head">
+    <div><h1>My activity</h1><div class="sub">Every time one of your tags was read at a rack</div></div>
+  </div>
+  <div class="filters">
+    <label>Bike <select id="bike"><option value="">All my bikes</option></select></label>
+    <label>Range
+      <select id="range">
+        <option value="today">Today</option>
+        <option value="7d" selected>Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+        <option value="all">All time</option>
+      </select>
+    </label>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="k">Taps</div><div class="v" id="t-taps">–</div><div class="d" id="t-taps-d"></div></div>
+    <div class="tile"><div class="k">Unlocked</div><div class="v" id="t-ok">–</div><div class="d">accepted taps</div></div>
+    <div class="tile"><div class="k">Denied</div><div class="v" id="t-no">–</div><div class="d">while reported lost</div></div>
+    <div class="tile"><div class="k">Last tap</div><div class="v" id="t-last" style="font-size:18px">–</div><div class="d" id="t-last-d"></div></div>
+  </div>
+  <div class="row">
+    <div class="card"><h2>Taps per day</h2><svg class="chart" id="chart" role="img" aria-label="Taps per day"></svg></div>
+    <div class="card"><h2>Alerts about my bikes <span id="alerts-sub"></span></h2>
+      <div id="alerts"></div><div class="empty" id="alerts-empty" hidden>Nothing to report.</div></div>
+  </div>
+  <div class="card">
+    <h2>History <span id="hist-sub"></span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Time</th><th>Bike</th><th>Location</th><th>Result</th></tr></thead>
+      <tbody id="rows"></tbody></table>
+      <div class="empty" id="rows-empty" hidden>No taps in this range.</div></div>
+  </div>
+</section>
+
+<!-- ============================ MY MAP ============================ -->
+<section data-view="map">
+  <div class="page-head">
+    <div><h1>My map</h1><div class="sub">Where each of your bikes was last seen</div></div>
+  </div>
+  <div class="card">
+    <div id="map" class="map"></div>
+    <div class="legend"><span><i style="background:var(--series-1)"></i>Last seen here</span><span><i style="background:var(--text-muted)"></i>Other rack readers</span></div>
+  </div>
+  <div class="card">
+    <h2>Last known locations</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Bike</th><th>Rack</th><th>When</th></tr></thead>
+      <tbody id="loc-rows"></tbody></table>
+      <div class="empty" id="loc-empty" hidden>None of your bikes has been seen by a reader yet.</div></div>
+  </div>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const CAMPUS = [33.4187, -111.9347];
+  const POLL_MS = 5000;
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const banner = (msg) => { const b = $('banner'); b.textContent = msg || ''; b.hidden = !msg; };
+  const api = async (path, opts = {}) => {
+    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (res.status === 401) { location.replace('login.html'); throw new Error('login required'); }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || res.statusText);
+    return j;
+  };
+  const act = async (fn, what) => { try { await fn(); banner(''); } catch (e) { if (e.message !== 'login required') banner(`${what} failed: ${e.message}`); } };
+
+  let me = null, readers = {}, readerList = [], tags = [], scans = [], alerts = [], view = 'bikes', map = null, markers = [];
+
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '–';
+  const ago = (ts) => { if (!ts) return 'never'; const s = Math.max(0, (Date.now() - new Date(ts)) / 1000);
+    return s < 60 ? `${Math.round(s)} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+  const spacedUid = (u) => u.replace(/(..)(?=.)/g, '$1 ');
+  const tagByUid = (uid) => tags.find(t => t.uid === uid);
+  const bikeName = (uid) => { const t = tagByUid(uid); return t ? (t.label || spacedUid(t.uid)) : spacedUid(uid); };
+  const where = (rid) => readers[rid] ? readers[rid].name : rid;
+  const lastScanOf = (uid) => scans.find(s => s.uid === uid);   // scans are newest first
+
+  // ---------- routing ----------
+  function route() {
+    const v = (location.hash.replace('#/', '') || 'bikes').split('?')[0];
+    view = ['bikes', 'activity', 'map'].includes(v) ? v : 'bikes';
+    document.querySelectorAll('section[data-view]').forEach(s => s.classList.toggle('active', s.dataset.view === view));
+    document.querySelectorAll('nav a.tab').forEach(a => a.classList.toggle('active', a.dataset.tab === view));
+    render();
+    if (view === 'map' && map) setTimeout(() => map.invalidateSize(), 50);
+  }
+  window.addEventListener('hashchange', route);
+
+  // ---------- MY BIKES ----------
+  function renderBikes() {
+    $('bikes').innerHTML = tags.map(t => {
+      const last = lastScanOf(t.uid);
+      return `<div class="bike">
+        <div class="name"><span>${esc(t.label || 'Unnamed bike')}</span>
+          ${t.authorized ? '<span class="badge good">✓ Active</span>' : '<span class="badge critical">⊘ Reported lost</span>'}</div>
+        <div class="uid mono">${spacedUid(t.uid)}</div>
+        <div class="meta">${last ? `Last seen ${ago(last.ts)} at ${esc(where(last.reader_id))}` : 'Not seen by a reader yet'} · ${t.scans} tap${t.scans === 1 ? '' : 's'}</div>
+        <div class="act">
+          <button class="small" data-toggle="${t.uid}" data-auth="${t.authorized ? 0 : 1}">${t.authorized ? 'Report lost' : 'Found it'}</button>
+          <button class="small" data-rename="${t.uid}">Rename</button>
+          <button class="small danger" data-del="${t.uid}">Remove</button>
+        </div></div>`;
+    }).join('');
+    $('bikes-empty').hidden = tags.length > 0;
+    $('bikes').querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => act(async () => {
+      const restore = b.dataset.auth === '1';
+      if (!restore && !confirm('Report this tag as lost? It will be denied at every rack until you mark it found.')) return;
+      await api(`/api/tags/${b.dataset.toggle}`, { method: 'PUT', body: JSON.stringify({ authorized: restore }) });
+      await refresh();
+    }, 'Updating the tag')));
+    $('bikes').querySelectorAll('[data-rename]').forEach(b => b.addEventListener('click', () => act(async () => {
+      const t = tagByUid(b.dataset.rename); const label = prompt('Bike description', t.label || '');
+      if (label === null) return;
+      await api(`/api/tags/${t.uid}`, { method: 'PUT', body: JSON.stringify({ label }) }); await refresh();
+    }, 'Renaming')));
+    $('bikes').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => act(async () => {
+      if (!confirm('Remove this tag from your account? It will no longer unlock anything.')) return;
+      await api(`/api/tags/${b.dataset.del}`, { method: 'DELETE' }); await refresh();
+    }, 'Removing the tag')));
+  }
+  $('add-form').addEventListener('submit', (e) => { e.preventDefault(); const m = $('add-msg'); m.className = ''; m.textContent = '';
+    act(async () => {
+      const r = await api('/api/tags', { method: 'POST', body: JSON.stringify({ uid: $('f-uid').value, label: $('f-label').value }) });
+      m.className = 'msg-ok'; m.textContent = `Added ${spacedUid(r.uid)} to your bikes.`; $('add-form').reset(); await refresh();
+    }, 'Adding the bike').then(() => { if ($('banner').hidden === false) { m.className = 'msg-err'; m.textContent = $('banner').textContent; banner(''); } });
+  });
+
+  // ---------- MY ACTIVITY ----------
+  function rangeStart() {
+    const now = new Date();
+    switch ($('range').value) {
+      case 'today': { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
+      case '7d': return new Date(now - 7 * 86400e3);
+      case '30d': return new Date(now - 30 * 86400e3);
+      default: return null;
+    }
+  }
+  function filtered() {
+    const start = rangeStart(), uid = $('bike').value;
+    return scans.filter(s => (!start || new Date(s.ts) >= start) && (!uid || s.uid === uid));
+  }
+  function renderChart(rows) {
+    const days = $('range').value === 'today' ? 1 : $('range').value === '7d' ? 7 : $('range').value === '30d' ? 30 : Math.min(30, Math.max(1, rows.length ? Math.ceil((Date.now() - new Date(rows[rows.length - 1].ts)) / 86400e3) + 1 : 7));
+    let first = new Date(); first.setHours(0, 0, 0, 0); first = new Date(first - (days - 1) * 86400e3);
+    const b = Array.from({ length: days }, (_, i) => ({ t: new Date(first.getTime() + i * 86400e3), v: 0 }));
+    for (const s of rows) { const i = Math.floor((new Date(s.ts) - first) / 86400e3); if (i >= 0 && i < days) b[i].v++; }
+    const svg = $('chart'), W = svg.clientWidth || 400, H = 160, P = { t: 8, r: 6, b: 24, l: 26 };
+    const iw = W - P.l - P.r, ih = H - P.t - P.b, max = Math.max(1, ...b.map(x => x.v));
+    const top = Math.ceil(max / 2) * 2, y = v => P.t + ih - (v / top) * ih;
+    const gap = 2, bw = Math.max(2, iw / b.length - gap);
+    let g = `<g class="grid">` + [0, top / 2, top].map(t => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(t)}" y2="${y(t)}"/><text x="${P.l - 5}" y="${y(t) + 4}" text-anchor="end">${t}</text>`).join('') + `</g>`;
+    g += `<g class="axis"><line x1="${P.l}" x2="${W - P.r}" y1="${P.t + ih}" y2="${P.t + ih}"/></g>`;
+    const every = Math.ceil(b.length / (iw / 44));
+    b.forEach((x, i) => { const bx = P.l + i * (iw / b.length) + gap / 2, by = y(x.v), h = P.t + ih - by;
+      g += `<g><title>${x.t.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}: ${x.v}</title>
+        <rect class="bar" x="${bx}" y="${by}" width="${bw}" height="${Math.max(h, x.v ? 2 : 0)}" rx="3" ry="3"/>${h > 3 ? `<rect class="bar" x="${bx}" y="${P.t + ih - 3}" width="${bw}" height="3"/>` : ''}
+        ${i % every === 0 ? `<text x="${bx + bw / 2}" y="${H - 7}" text-anchor="middle">${x.t.toLocaleDateString([], { month: 'short', day: 'numeric' })}</text>` : ''}</g>`; });
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = g;
+  }
+  const SEV_ICON = { critical: '⛔', serious: '⚠', warning: '△' };
+  function renderActivity() {
+    const rows = filtered(), ok = rows.filter(s => s.authorized).length;
+    $('t-taps').textContent = rows.length; $('t-taps-d').textContent = $('range').options[$('range').selectedIndex].text.toLowerCase();
+    $('t-ok').textContent = ok; $('t-no').textContent = rows.length - ok;
+    const last = scans[0];
+    $('t-last').textContent = last ? ago(last.ts) : 'never'; $('t-last-d').textContent = last ? `${bikeName(last.uid)} at ${where(last.reader_id)}` : '';
+    renderChart(rows);
+    $('rows').innerHTML = rows.slice(0, 300).map(s => `<tr><td>${fmtTime(s.ts)}</td><td>${esc(bikeName(s.uid))}</td><td class="dim">${esc(where(s.reader_id))}</td>
+      <td>${s.authorized ? '<span class="badge good">✓ Unlocked</span>' : '<span class="badge critical">✕ Denied · reported lost</span>'}</td></tr>`).join('');
+    $('rows-empty').hidden = rows.length > 0; $('hist-sub').textContent = `· ${rows.length}`;
+    $('alerts').innerHTML = alerts.slice(0, 20).map(a => `<div class="alertrow"><span class="badge ${a.severity}">${SEV_ICON[a.severity] || ''} ${a.severity}</span>
+      <div>${esc(a.message)}<div class="meta">${fmtTime(a.ts)}${a.reader_id ? ` · ${esc(where(a.reader_id))}` : ''}</div></div></div>`).join('');
+    $('alerts-empty').hidden = alerts.length > 0; $('alerts-sub').textContent = `· ${alerts.length}`;
+  }
+  ['bike', 'range'].forEach(id => $(id).addEventListener('change', renderActivity));
+  window.addEventListener('resize', () => { if (view === 'activity') renderChart(filtered()); });
+
+  // ---------- MY MAP ----------
+  function renderMap() {
+    if (!map) {
+      map = L.map('map', { scrollWheelZoom: false }).setView(CAMPUS, 16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+      for (const r of readerList) L.circleMarker([r.lat, r.lon], { radius: 5, color: '#fcfcfb', weight: 1, fillColor: '#86847e', fillOpacity: 0.8 }).bindTooltip(r.name).addTo(map);
+    }
+    markers.forEach(m => m.remove()); markers = [];
+    const rows = [];
+    const perReader = {};
+    for (const t of tags) {
+      const last = lastScanOf(t.uid); if (!last || !readers[last.reader_id]) { rows.push({ t, last: null }); continue; }
+      const r = readers[last.reader_id]; const n = (perReader[r.id] = (perReader[r.id] || 0) + 1);
+      const m = L.circleMarker([r.lat + (n - 1) * 0.00012, r.lon + (n - 1) * 0.00012], { radius: 10, color: '#fcfcfb', weight: 2, fillColor: '#2a78d6', fillOpacity: 0.95 })
+        .bindPopup(`<b>${esc(t.label || spacedUid(t.uid))}</b>${esc(r.name)}<br>last seen ${ago(last.ts)}`).bindTooltip(t.label || spacedUid(t.uid)).addTo(map);
+      markers.push(m); rows.push({ t, last, r });
+    }
+    $('loc-rows').innerHTML = rows.map(x => `<tr><td>${esc(x.t.label || spacedUid(x.t.uid))}</td><td class="dim">${x.r ? esc(x.r.name) : '—'}</td><td class="dim">${x.last ? `${ago(x.last.ts)} (${fmtTime(x.last.ts)})` : 'not seen yet'}</td></tr>`).join('');
+    $('loc-empty').hidden = rows.some(x => x.last);
+  }
+
+  function render() { if (view === 'bikes') renderBikes(); else if (view === 'activity') renderActivity(); else renderMap(); }
+
+  // ---------- data ----------
+  async function refresh() {
+    const [t, s, a] = await Promise.all([api('/api/tags'), api('/api/scans?limit=3000'), api('/api/alerts')]);
+    tags = t.tags; scans = s.scans; alerts = a.alerts;
+    const sel = $('bike'), cur = sel.value; sel.innerHTML = '<option value="">All my bikes</option>' + tags.map(x => `<option value="${x.uid}">${esc(x.label || spacedUid(x.uid))}</option>`).join(''); sel.value = cur;
+    render();
+  }
+  async function init() {
+    const m = await api('/api/auth/me'); me = m.user;
+    if (me.role === 'staff') { location.replace('index.html'); return; }
+    $('who').textContent = me.display_name;
+    const r = await api('/api/readers'); readerList = r.readers; readers = Object.fromEntries(readerList.map(x => [x.id, x]));
+    await refresh(); route();
+    setInterval(() => refresh().catch(() => {}), POLL_MS);
+  }
+  $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.replace('login.html'); });
+  init().catch(e => { if (e.message !== 'login required') banner(`Could not load: ${e.message}`); });
+})();
+</script>
+</body>
+</html>

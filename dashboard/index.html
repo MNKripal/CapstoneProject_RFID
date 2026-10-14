@@ -144,8 +144,11 @@
   <a class="tab" href="#/readers" data-tab="readers">Readers</a>
   <a class="tab" href="#/alerts" data-tab="alerts">Alerts <span class="count" id="alert-count" hidden>0</span></a>
   <a class="tab" href="#/tags" data-tab="tags">Tags</a>
+  <a class="tab" href="#/users" data-tab="users">Users</a>
   <span class="spacer"></span>
   <span class="live" id="live">connecting…</span>
+  <span class="who" id="who" style="color:var(--text-secondary);font-size:13px;margin:0 8px 0 14px;white-space:nowrap"></span>
+  <button type="button" class="small" id="logout">Log out</button>
 </nav>
 
 <div id="banner" hidden></div>
@@ -243,11 +246,12 @@
   <div class="row even">
     <div class="card">
       <h2>Register a tag</h2>
-      <form class="inline" id="tag-form">
+      <form class="inline" id="tag-form" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr))">
         <label>UID (hex)<input type="text" id="f-uid" class="mono" placeholder="DE AD BE EF" required></label>
-        <label>Owner<input type="text" id="f-owner" placeholder="Student name"></label>
+        <label>Owner<select id="f-owner"><option value="">No account (name only)</option></select></label>
         <label>Label<input type="text" id="f-label" placeholder="Bike description"></label>
-        <button type="submit" class="primary">Add</button>
+        <label>Owner name (if no account)<input type="text" id="f-owner-name" placeholder="Student name"></label>
+        <button type="submit" class="primary" style="align-self:end">Add</button>
       </form>
       <div id="tag-form-msg"></div>
     </div>
@@ -268,6 +272,30 @@
       <div class="empty" id="tags-empty" hidden>No tags registered yet.</div></div>
   </div>
 </section>
+
+<!-- ============================ USERS ============================ -->
+<section data-view="users">
+  <div class="page-head">
+    <div><h1>Users</h1><div class="sub">Student accounts see only their own bikes; staff accounts see this dashboard.</div></div>
+  </div>
+  <div class="card">
+    <h2>Create an account</h2>
+    <form class="inline" id="user-form" style="grid-template-columns: 1fr 1fr 1fr auto auto">
+      <label>Username<input type="text" id="u-name" autocomplete="off" required></label>
+      <label>Display name<input type="text" id="u-display" autocomplete="off"></label>
+      <label>Password<input type="text" id="u-pass" autocomplete="off" required minlength="6"></label>
+      <label>Role<select id="u-role"><option value="student">Student</option><option value="staff">Staff</option></select></label>
+      <button type="submit" class="primary">Create</button>
+    </form>
+    <div id="user-form-msg"></div>
+  </div>
+  <div class="card">
+    <h2>Accounts <span id="users-sub"></span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Tags</th><th>Created</th><th></th></tr></thead>
+      <tbody id="user-rows"></tbody></table></div>
+  </div>
+</section>
 </main>
 
 <div class="tip" id="tip"></div>
@@ -281,6 +309,7 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const api = async (path, opts = {}) => {
     const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (res.status === 401) { location.replace('login.html'); throw new Error('login required'); }
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || res.statusText);
     return j;
@@ -300,6 +329,8 @@
   let alerts = [];
   let tags = [];
   let tagsByUid = {};
+  let users = [];
+  let me = null;
   let view = 'activity';
   const maps = {};        // view -> { map, markers }
 
@@ -325,7 +356,7 @@
   // ---------- routing ----------
   function route() {
     const v = (location.hash.replace('#/', '') || 'activity').split('?')[0];
-    view = ['activity', 'readers', 'alerts', 'tags'].includes(v) ? v : 'activity';
+    view = ['activity', 'readers', 'alerts', 'tags', 'users'].includes(v) ? v : 'activity';
     document.querySelectorAll('section[data-view]').forEach(s => s.classList.toggle('active', s.dataset.view === view));
     document.querySelectorAll('nav a.tab').forEach(a => a.classList.toggle('active', a.dataset.tab === view));
     renderView();
@@ -510,7 +541,7 @@
   let unregistered = [];
   function renderTags() {
     $('tag-rows').innerHTML = tags.map(t => `<tr>
-      <td class="uid">${spacedUid(t.uid)}</td><td>${esc(t.owner || '—')}</td><td class="dim">${esc(t.label || '—')}</td>
+      <td class="uid">${spacedUid(t.uid)}</td><td>${esc(t.owner || '—')}${t.owner_username ? ` <span class="dim" style="color:var(--text-muted)">@${esc(t.owner_username)}</span>` : ''}</td><td class="dim">${esc(t.label || '—')}</td>
       <td>${t.authorized ? '<span class="badge good">✓ Authorized</span>' : '<span class="badge serious">⊘ Revoked</span>'}</td>
       <td class="dim">${fmtDate(t.created_at)}</td><td class="dim">${t.last_seen ? ago(t.last_seen) : 'never'}</td><td>${t.scans}</td>
       <td class="actions"><button class="small" data-toggle="${t.uid}" data-auth="${t.authorized ? 0 : 1}">${t.authorized ? 'Revoke' : 'Restore'}</button><button class="small danger" data-del="${t.uid}">Delete</button></td></tr>`).join('');
@@ -540,7 +571,7 @@
     e.preventDefault();
     const msg = $('tag-form-msg');
     try {
-      const r = await api('/api/tags', { method: 'POST', body: JSON.stringify({ uid: $('f-uid').value, owner: $('f-owner').value, label: $('f-label').value }) });
+      const r = await api('/api/tags', { method: 'POST', body: JSON.stringify({ uid: $('f-uid').value, owner_id: $('f-owner').value || null, owner: $('f-owner-name').value, label: $('f-label').value }) });
       msg.className = 'msg-ok'; msg.textContent = `Registered ${spacedUid(r.uid)}.`;
       $('tag-form').reset(); await refreshTags();
     } catch (err) { msg.className = 'msg-err'; msg.textContent = err.message; }
@@ -550,6 +581,39 @@
     tags = t.tags; tagsByUid = Object.fromEntries(tags.map(x => [x.uid, x])); unregistered = u.unregistered;
     if (view === 'tags') renderTags();
   }
+
+  // ---------- USERS ----------
+  async function loadUsers() {
+    users = (await api('/api/users')).users;
+    const sel = $('f-owner'), cur = sel.value;
+    sel.innerHTML = '<option value="">No account (name only)</option>' + users.map(u => `<option value="${u.id}">${esc(u.display_name)} (@${esc(u.username)}, ${u.role})</option>`).join('');
+    sel.value = cur;
+  }
+  function renderUsers() {
+    $('user-rows').innerHTML = users.map(u => `<tr>
+      <td class="mono">${esc(u.username)}</td><td>${esc(u.display_name)}</td>
+      <td>${u.role === 'staff' ? '<span class="badge good">staff</span>' : '<span class="badge muted">student</span>'}</td>
+      <td>${u.tags}</td><td class="dim">${fmtDate(u.created_at)}</td>
+      <td class="actions">${u.id === me.id ? '<span class="dim" style="color:var(--text-muted)">you</span>' :
+        `<button class="small" data-role="${u.id}" data-to="${u.role === 'staff' ? 'student' : 'staff'}">Make ${u.role === 'staff' ? 'student' : 'staff'}</button><button class="small danger" data-udel="${u.id}">Delete</button>`}</td></tr>`).join('');
+    $('users-sub').textContent = `· ${users.length}`;
+    $('user-rows').querySelectorAll('[data-role]').forEach(b => b.addEventListener('click', () => act(async () => {
+      await api(`/api/users/${b.dataset.role}`, { method: 'PUT', body: JSON.stringify({ role: b.dataset.to }) }); await loadUsers(); renderUsers();
+    }, 'Changing the role')));
+    $('user-rows').querySelectorAll('[data-udel]').forEach(b => b.addEventListener('click', () => act(async () => {
+      const u = users.find(x => x.id === +b.dataset.udel);
+      if (!confirm(`Delete account ${u.username}? Their tags stay registered but lose their owner link.`)) return;
+      await api(`/api/users/${u.id}`, { method: 'DELETE' }); await loadUsers(); renderUsers(); await refreshTags();
+    }, 'Deleting the account')));
+  }
+  $('user-form').addEventListener('submit', async (e) => {
+    e.preventDefault(); const msg = $('user-form-msg');
+    try {
+      const r = await api('/api/users', { method: 'POST', body: JSON.stringify({ username: $('u-name').value, display_name: $('u-display').value, password: $('u-pass').value, role: $('u-role').value }) });
+      msg.className = 'msg-ok'; msg.textContent = `Created ${r.user.role} account ${r.user.username}.`; $('user-form').reset(); await loadUsers(); renderUsers();
+    } catch (err) { msg.className = 'msg-err'; msg.textContent = err.message; }
+  });
+  $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.replace('login.html'); });
 
   // ---------- data loading ----------
   async function loadReaders() {
@@ -569,6 +633,7 @@
     else if (view === 'readers') renderReaders();
     else if (view === 'alerts') renderAlerts();
     else if (view === 'tags') renderTags();
+    else if (view === 'users') renderUsers();
   }
   let sig = '';
   async function poll() {
@@ -585,8 +650,12 @@
   $('reset').addEventListener('click', () => { $('range').value = '24h'; $('reader').value = ''; $('status').value = ''; renderActivity(); });
   window.addEventListener('resize', () => { if (view === 'activity') renderChart(filteredScans()); });
 
-  loadReaders().then(refreshTags).then(() => { route(); return poll(); }).then(() => setInterval(poll, POLL_MS))
-    .catch(e => { banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
+  api('/api/auth/me').then(m => {
+    me = m.user;
+    if (me.role !== 'staff') { location.replace('me.html'); throw new Error('login required'); }
+    $('who').textContent = `${me.display_name} (staff)`;
+  }).then(loadReaders).then(loadUsers).then(refreshTags).then(() => { route(); return poll(); }).then(() => setInterval(poll, POLL_MS))
+    .catch(e => { if (e.message === 'login required') return; banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
 })();
 </script>
 </body>

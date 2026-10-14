@@ -9,6 +9,10 @@ This script POSTs both to the server. The server's tag registry makes the
 final authorized/denied decision; if it disagrees with the firmware's
 hard-coded UID, a warning is printed here.
 
+The server only accepts scans that carry the device key (dashboard/device_key.txt,
+created the first time server.py runs). The bridge reads that file automatically
+when it runs from the dashboard folder; otherwise pass --key.
+
 Requires pyserial:  python3 -m pip install pyserial
 
     python3 serial_bridge.py                       # auto-detects /dev/cu.usbmodem*
@@ -17,6 +21,7 @@ Requires pyserial:  python3 -m pip install pyserial
 import argparse
 import glob
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -35,10 +40,13 @@ def find_port():
     return candidates[0]
 
 
+DEVICE_KEY = ""
+
+
 def post(server, path, payload):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(f"{server}{path}", data=body,
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers={"Content-Type": "application/json", "X-Device-Key": DEVICE_KEY}, method="POST")
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 
@@ -67,7 +75,18 @@ def main():
     ap.add_argument("--port", help="serial device (default: first /dev/cu.usbmodem*)")
     ap.add_argument("--server", default="http://localhost:8080")
     ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--key", help="device key (default: read dashboard/device_key.txt next to this script)")
     args = ap.parse_args()
+
+    global DEVICE_KEY
+    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "device_key.txt")
+    if args.key:
+        DEVICE_KEY = args.key
+    elif os.path.exists(key_path):
+        with open(key_path) as f:
+            DEVICE_KEY = f.read().strip()
+    else:
+        sys.exit(f"No device key. Start server.py once (it creates {key_path}) or pass --key.")
 
     port = args.port or find_port()
     print(f"Listening on {port}, forwarding to {args.server}")
@@ -87,6 +106,8 @@ def main():
                     if line.startswith(("SCAN,", "HB,")):
                         try:
                             handle_line(line, args.server)
+                        except urllib.error.HTTPError as e:
+                            print(f"  ! server rejected it: {e.code} {e.read().decode(errors='replace')[:120]}")
                         except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
                             print(f"  ! could not forward to server: {e}")
         except serial.SerialException as e:

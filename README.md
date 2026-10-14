@@ -18,11 +18,17 @@ the location of the reader that saw it. No GPS is needed.
 - Reads ISO 14443-A tags (MIFARE Classic and similar) over SPI with the MFRC522.
 - Recovers automatically if the reader chip loses its configuration.
 - Prints every scan and a heartbeat over USB so a computer can log them.
-- Web dashboard with four screens:
+- Staff dashboard with five screens:
   - **Activity**: totals, campus map, scans-over-time chart, full scan history.
   - **Readers**: which readers are online, where they are, today's counts.
   - **Alerts**: denied scans, repeated denials, unknown readers, readers offline.
-  - **Tags**: the registry of authorized tags, with revoke, restore and delete.
+  - **Tags**: the registry of authorized tags, with owner, revoke, restore and delete.
+  - **Users**: create staff and student accounts.
+- Student portal where each student sees only their own bikes:
+  - **My bikes**: the tags registered to them, report lost / found, add a tag.
+  - **My activity**: every tap of their tags, with location and result.
+  - **My map**: where each of their bikes was last seen.
+- Login with username and password; students can create their own account.
 - Works on a laptop or a phone, in light or dark mode.
 
 ## Hardware
@@ -86,8 +92,17 @@ cd dashboard
 python3 server.py
 ```
 
-Open http://localhost:8080 in a browser. Add `--demo` the first time to see
-sample data. If the port is busy, add `--port 8081`.
+Open http://localhost:8080 in a browser. You land on the sign-in page.
+
+- Add `--demo` the first time to get sample data and three demo accounts:
+  `admin / admin123` (staff), `kripal / pass123` and `nihar / pass123` (students).
+- Without `--demo`, create the first staff account once:
+  `python3 server.py --create-user admin --role staff`
+- If the port is busy, add `--port 8081`.
+
+Staff land on the dashboard (`index.html`); students land on the portal (`me.html`).
+The first run also creates `dashboard/device_key.txt`, the secret the readers use
+to post scans. Keep it out of git (it is ignored already).
 
 ### 3. Connect the reader to the dashboard
 
@@ -99,13 +114,29 @@ python3 serial_bridge.py
 ```
 
 The bridge reads the Pico's serial output and forwards each `SCAN` and heartbeat
-line to the server. Taps show up on the dashboard within a few seconds.
+line to the server, sending the device key with each request. Taps show up on
+the dashboard within a few seconds.
 
-### 4. Register tags and readers
+### 4. Register tags, readers and students
 
-- In the dashboard's **Tags** tab, tap a new card on a reader, then click
-  **Register** next to it and enter the owner's name.
+- Students create an account on the sign-in page, then add their tag under
+  **My bikes** (the UID is printed on the serial monitor when the tag is tapped).
+- Staff can also register tags in the **Tags** tab, pick the owner account, or
+  click **Register** next to a tag that was tapped but not registered.
+- Staff create more accounts in the **Users** tab.
 - Add each reader's rack location to `dashboard/readers.json` with its `READER_ID`.
+
+## Accounts and access
+
+| Who | Can |
+| :--- | :--- |
+| Anonymous | Sign in, create a student account |
+| Reader (device key) | Post scans and heartbeats |
+| Student | See their own tags, taps and alerts; add, rename, report lost/found, remove their own tags |
+| Staff | Everything, including all scans, alerts, the tag registry, owners and user accounts |
+
+Passwords are stored as salted PBKDF2 hashes. Sessions are HttpOnly cookies that
+last 30 days. The server never serves the database, the device key or its own code.
 
 ## How authorization works
 
@@ -122,8 +153,11 @@ blink_any.c            Firmware: reader loop, authorization, SCAN and HB serial 
 mfrc522.c / mfrc522.h  MFRC522 driver (SPI register access, anticollision, select)
 CMakeLists.txt         Pico SDK build configuration
 dashboard/
-  server.py            Web server, SQLite database and REST API (standard library only)
-  index.html           The dashboard page (HTML, CSS, JavaScript, Leaflet map)
+  server.py            Web server, SQLite database, accounts and REST API (standard library only)
+  login.html           Sign in / create a student account
+  index.html           Staff dashboard (HTML, CSS, JavaScript, Leaflet map)
+  me.html              Student portal: My bikes, My activity, My map
+  portal.css           Shared styles for login.html and me.html
   readers.json         Reader ID -> name, latitude, longitude
   serial_bridge.py     Forwards serial output from the Pico to the server
 docs/
@@ -132,14 +166,23 @@ docs/
 
 ## REST API
 
+Every endpoint needs a signed-in session except the two the readers use, which
+need the `X-Device-Key` header instead. Students get their own data only.
+
 | Method | Path | Purpose |
 | :--- | :--- | :--- |
-| `POST` | `/api/scans` | Log a scan: `{"reader_id": "rack-01", "uid": "DEADBEEF"}` |
-| `GET` | `/api/scans` | List scans, newest first (`?since=`, `?limit=`) |
-| `POST` | `/api/heartbeat` | Reader is alive: `{"reader_id": "rack-01"}` |
+| `POST` | `/api/auth/login` | `{"username", "password"}`; sets the session cookie |
+| `POST` | `/api/auth/register` | Create a student account |
+| `POST` | `/api/auth/logout` | End the session |
+| `GET` | `/api/auth/me` | Who am I |
+| `GET` / `POST` | `/api/users` | Staff: list / create accounts |
+| `PUT` / `DELETE` | `/api/users/<id>` | Staff: change role, name or password / delete |
+| `POST` | `/api/scans` | Reader: log a scan `{"reader_id": "rack-01", "uid": "DEADBEEF"}` |
+| `GET` | `/api/scans` | List scans, newest first (`?since=`, `?limit=`; staff may add `?owner=<user id>`) |
+| `POST` | `/api/heartbeat` | Reader: I am alive `{"reader_id": "rack-01"}` |
 | `GET` | `/api/readers` | Readers with location, online status and today's counts |
-| `GET` / `POST` | `/api/tags` | List the registry / register a tag |
-| `PUT` / `DELETE` | `/api/tags/<uid>` | Update (`owner`, `label`, `authorized`) / remove a tag |
+| `GET` / `POST` | `/api/tags` | List tags / register one (students own what they register; staff may set `owner_id`) |
+| `PUT` / `DELETE` | `/api/tags/<uid>` | Update `label`, `authorized` (staff also `owner_id`) / remove |
 | `GET` | `/api/tags/unregistered` | UIDs seen by readers but not registered |
 | `GET` | `/api/alerts` | Open alerts (`?include_acked=1` for all) |
 | `POST` | `/api/alerts/<id>/ack` | Acknowledge one alert |
