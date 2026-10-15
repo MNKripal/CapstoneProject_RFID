@@ -1,0 +1,7 @@
+RFID Reader – Current Issues
+
+During the development of the RFID-based Campus Bike Security and Alert System, I have been working on integrating the MFRC522 RFID reader with the Raspberry Pi Pico 2 W. One of the major challenges has been the Wi-Fi module on the Pico 2 W, which is causing issues during system integration and testing. These issues are affecting the reliability of the RFID reader and making it difficult to achieve consistent communication and tag detection.
+
+I have been troubleshooting the SPI communication between the RFID reader and the Pico 2 W while investigating possible conflicts involving the Wi-Fi module. Although the code includes RFID initialization, tag detection, and UID retrieval, further testing is required to determine whether the issues are caused by the Wi-Fi integration, hardware configuration, or software implementation.
+
+Another issue is duplicate RFID detections. The current code continuously polls for tags every 500 milliseconds, allowing the same tag to be detected multiple times while it remains near the reader. I am working on improving the detection logic so that each physical tag pass generates only one event. Once the Wi-Fi-related issues are resolved, additional regression testing will be needed to verify reliable RFID detection and overall system stability.
