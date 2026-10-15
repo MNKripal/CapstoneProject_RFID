@@ -120,6 +120,18 @@
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
   .dot.good { background: var(--good); } .dot.critical { background: var(--critical); } .dot.muted { background: var(--text-muted); }
 
+  /* reader status strip (Activity view) */
+  .reader-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--surface-1);
+    border: 1px solid var(--border); color: var(--text-primary); text-decoration: none; font-size: 13px; }
+  .chip:hover { border-color: var(--text-muted); }
+  .chip .st { color: var(--text-secondary); font-size: 12px; }
+  .chip.offline { border-color: var(--critical); }
+  .dot.pulse { box-shadow: 0 0 0 0 rgba(12,163,12,0.6); animation: pulse 2s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,0.55); } 70% { box-shadow: 0 0 0 6px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
+  nav.top .navdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  nav.top .navdot[hidden] { display: none; }
+
   /* alerts */
   .alert { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 12px 4px; border-bottom: 1px solid var(--border); }
   .alert:last-child { border-bottom: 0; }
@@ -141,7 +153,7 @@
 <nav class="top">
   <span class="brand">RFID Scan Log</span>
   <a class="tab" href="#/activity" data-tab="activity">Activity</a>
-  <a class="tab" href="#/readers" data-tab="readers">Readers</a>
+  <a class="tab" href="#/readers" data-tab="readers">Readers <span class="navdot" id="readers-dot" hidden title=""></span></a>
   <a class="tab" href="#/alerts" data-tab="alerts">Alerts <span class="count" id="alert-count" hidden>0</span></a>
   <a class="tab" href="#/tags" data-tab="tags">Tags</a>
   <a class="tab" href="#/users" data-tab="users">Users</a>
@@ -158,6 +170,7 @@
   <div class="page-head">
     <div><h1>Activity</h1><div class="sub">Tag reads from fixed reader stations on the ASU Tempe campus</div></div>
   </div>
+  <div class="reader-strip" id="reader-strip" aria-label="Reader status"></div>
   <div class="filters">
     <label>Range
       <select id="range">
@@ -493,7 +506,22 @@
   }
   function renderActivity() {
     const rows = filteredScans();
-    renderTiles(rows); renderActivityMap(rows); renderChart(rows); renderActivityTable(rows);
+    renderReaderStrip(); renderTiles(rows); renderActivityMap(rows); renderChart(rows); renderActivityTable(rows);
+  }
+
+  // ---------- reader status indicator (Activity view + nav) ----------
+  function renderReaderStrip() {
+    const cls = { online: 'good', offline: 'critical', 'never seen': 'muted' };
+    $('reader-strip').innerHTML = readerList.map(r => `
+      <a class="chip ${r.status === 'offline' ? 'offline' : ''}" href="#/readers" title="${esc(r.id)} · last contact ${ago(r.last_seen)}">
+        <span class="dot ${cls[r.status]} ${r.online ? 'pulse' : ''}"></span>
+        <span>${esc(r.name)}</span>
+        <span class="st">${r.online ? 'online' : r.status === 'offline' ? `offline · ${ago(r.last_seen)}` : 'never seen'}</span>
+      </a>`).join('');
+    const down = readerList.filter(r => !r.online).length, dot = $('readers-dot');
+    dot.hidden = readerList.length === 0;
+    dot.style.background = down ? 'var(--critical)' : 'var(--good)';
+    dot.title = down ? `${down} of ${readerList.length} readers not reporting` : 'all readers online';
   }
 
   // ---------- READERS ----------
@@ -641,6 +669,7 @@
       const [s] = await Promise.all([api('/api/scans?limit=5000'), loadReaders(), loadAlerts()]);
       scans = s.scans;
       $('live').textContent = `live · ${new Date().toLocaleTimeString()}`; $('live').classList.remove('stale');
+      renderReaderStrip();
       const newSig = `${scans.length}:${scans[0]?.id}:${alerts.length}:${readerList.map(r => r.status).join()}`;
       if (newSig !== sig) { sig = newSig; await refreshTags(); renderView(); }
     } catch (e) { $('live').textContent = 'server unreachable'; $('live').classList.add('stale'); }
