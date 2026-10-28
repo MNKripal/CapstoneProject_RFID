@@ -60,7 +60,7 @@
   button { cursor: pointer; }
   button:hover { border-color: var(--text-muted); }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.small { padding: 3px 8px; font-size: 12px; }
+  button.small, select.small { padding: 3px 8px; font-size: 12px; }
   button.danger { color: var(--critical); }
   input[type=text] { min-width: 0; }
   input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
@@ -569,7 +569,12 @@
   let unregistered = [];
   function renderTags() {
     $('tag-rows').innerHTML = tags.map(t => `<tr>
-      <td class="uid">${spacedUid(t.uid)}</td><td>${esc(t.owner || '—')}${t.owner_username ? ` <span class="dim" style="color:var(--text-muted)">@${esc(t.owner_username)}</span>` : ''}</td><td class="dim">${esc(t.label || '—')}</td>
+      <td class="uid">${spacedUid(t.uid)}</td>
+      <td><select class="small" data-owner="${t.uid}" title="Link this tag to an account so its owner can see it in the student portal">
+            <option value="">${esc(t.owner ? `${t.owner} (no account)` : 'No account')}</option>
+            ${users.map(u => `<option value="${u.id}" ${u.id === t.owner_id ? 'selected' : ''}>${esc(u.display_name)} (@${esc(u.username)})</option>`).join('')}
+          </select>${t.owner_id ? '' : ' <span class="unknown" title="Not linked to any account; the owner cannot see this tag in the portal">⚠</span>'}</td>
+      <td class="dim">${esc(t.label || '—')}</td>
       <td>${t.authorized ? '<span class="badge good">✓ Authorized</span>' : '<span class="badge serious">⊘ Revoked</span>'}</td>
       <td class="dim">${fmtDate(t.created_at)}</td><td class="dim">${t.last_seen ? ago(t.last_seen) : 'never'}</td><td>${t.scans}</td>
       <td class="actions"><button class="small" data-toggle="${t.uid}" data-auth="${t.authorized ? 0 : 1}">${t.authorized ? 'Revoke' : 'Restore'}</button><button class="small danger" data-del="${t.uid}">Delete</button></td></tr>`).join('');
@@ -580,6 +585,14 @@
       <td class="actions"><button class="small primary" data-reg="${u.uid}">Register</button></td></tr>`).join('');
     $('unreg-empty').hidden = unregistered.length > 0;
     $('unreg-sub').textContent = `· ${unregistered.length}`;
+    $('tag-rows').querySelectorAll('[data-owner]').forEach(sel => sel.addEventListener('change', () => act(async () => {
+      const u = users.find(x => x.id === +sel.value);
+      await api(`/api/tags/${sel.dataset.owner}`, { method: 'PUT', body: JSON.stringify({ owner_id: sel.value ? +sel.value : null }) });
+      await refreshTags();
+      const msg = $('tag-form-msg'); msg.className = 'msg-ok';
+      msg.textContent = u ? `${spacedUid(sel.dataset.owner)} is now linked to ${u.display_name}; they can see it and its history in the student portal.`
+                          : `${spacedUid(sel.dataset.owner)} is no longer linked to an account.`;
+    }, 'Changing the owner')));
     $('tag-rows').querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => act(async () => {
       const restore = b.dataset.auth === '1';
       await api(`/api/tags/${b.dataset.toggle}`, { method: 'PUT', body: JSON.stringify({ authorized: restore }) });
