@@ -109,7 +109,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const CAMPUS = [33.4187, -111.9347];
-  const POLL_MS = 5000;
+  const POLL_MS = 2000;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const banner = (msg) => { const b = $('banner'); b.textContent = msg || ''; b.hidden = !msg; };
   const api = async (path, opts = {}) => {

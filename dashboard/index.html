@@ -318,7 +318,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const CAMPUS = [33.4187, -111.9347];
-  const POLL_MS = 4000;
+  const POLL_MS = 1500;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const api = async (path, opts = {}) => {
     const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
