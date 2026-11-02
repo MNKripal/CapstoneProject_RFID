@@ -35,6 +35,12 @@ target_link_libraries(blink_any
     hardware_spi
 )
 
+# Diagnostic build: cmake -DRFID_DIAG=ON ... prints register changes after boot
+option(RFID_DIAG "Build the reader with the register-watch diagnostic enabled" OFF)
+if(RFID_DIAG)
+    target_compile_definitions(blink_any PRIVATE RFID_DIAG=1)
+endif()
+
 pico_enable_stdio_usb(blink_any 1)
 pico_enable_stdio_uart(blink_any 0)
 

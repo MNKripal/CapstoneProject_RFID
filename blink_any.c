@@ -101,6 +101,81 @@ static void print_uid(const Uid *uid) {
     printf("  (SAK 0x%02X, %s)\n", uid->sak, PICC_GetTypeName(PICC_GetType(uid->sak)));
 }
 
+#ifdef RFID_DIAG
+// Diagnostic mode (build with -DRFID_DIAG=ON). Bisects what makes the chip
+// lose its configuration shortly after PCD_Init().
+static bool diag_cfg_ok(MFRC522Ptr_t mfrc) {
+    return (PCD_ReadRegister(mfrc, TModeReg) & 0x80) && ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) == 0x03);
+}
+// Sample the config at increasing delays; report the first sample where it is gone.
+static void diag_sample(MFRC522Ptr_t mfrc, const char *label) {
+    static const uint32_t at_ms[] = {0, 1, 5, 20, 50, 100, 200, 500, 1000, 2000, 3000};
+    absolute_time_t t0 = get_absolute_time();
+    for (unsigned i = 0; i < sizeof(at_ms) / sizeof(at_ms[0]); i++) {
+        while (absolute_time_diff_us(t0, get_absolute_time()) < (int64_t)at_ms[i] * 1000) tight_loop_contents();
+        if (!diag_cfg_ok(mfrc)) {
+            printf("DIAG %-34s LOST by +%lu ms  (TMode=%02X TxCtl=%02X Cmd=%02X RFCfg=%02X Status1=%02X)\n", label,
+                   (unsigned long)at_ms[i], PCD_ReadRegister(mfrc, TModeReg), PCD_ReadRegister(mfrc, TxControlReg),
+                   PCD_ReadRegister(mfrc, CommandReg), PCD_ReadRegister(mfrc, RFCfgReg), PCD_ReadRegister(mfrc, Status1Reg));
+            return;
+        }
+    }
+    printf("DIAG %-34s ok for 3000 ms\n", label);
+}
+static void diag_soft_init(MFRC522Ptr_t mfrc, bool max_gain) {   // PCD_Init without the RST pulse
+    PCD_Reset(mfrc);
+    PCD_WriteRegister(mfrc, TxModeReg, 0x00); PCD_WriteRegister(mfrc, RxModeReg, 0x00); PCD_WriteRegister(mfrc, ModWidthReg, 0x26);
+    PCD_WriteRegister(mfrc, TModeReg, 0x80); PCD_WriteRegister(mfrc, TPrescalerReg, 0xA9);
+    PCD_WriteRegister(mfrc, TReloadRegH, 0x03); PCD_WriteRegister(mfrc, TReloadRegL, 0xE8);
+    PCD_WriteRegister(mfrc, TxASKReg, 0x40); PCD_WriteRegister(mfrc, ModeReg, 0x3D);
+    if (max_gain) PCD_SetAntennaGain(mfrc, RxGain_max);
+    PCD_AntennaOn(mfrc);
+}
+static void diag_run(MFRC522Ptr_t mfrc) {
+    PCD_Init(mfrc);                      diag_sample(mfrc, "A: PCD_Init, then nothing");
+    PCD_Init(mfrc);                      diag_sample(mfrc, "A2: PCD_Init again");
+    diag_soft_init(mfrc, true);          diag_sample(mfrc, "B: soft reset only, max gain");
+    diag_soft_init(mfrc, false);         diag_sample(mfrc, "C: soft reset only, default gain");
+    PCD_Init(mfrc); PCD_SetAntennaGain(mfrc, RxGain_avg); diag_sample(mfrc, "D: PCD_Init then gain back to avg");
+    // E: the real loop. Poll for cards and check the config after every poll.
+    PCD_Init(mfrc);
+    absolute_time_t t0 = get_absolute_time(); uint32_t polls = 0; bool lost = false;
+    while (absolute_time_diff_us(t0, get_absolute_time()) < 3000 * 1000) {
+        PICC_IsNewCardPresent(mfrc); polls++;
+        if (!diag_cfg_ok(mfrc)) {
+            printf("DIAG E: PCD_Init + polling              LOST after %lu polls, +%lu ms (TMode=%02X TxCtl=%02X Cmd=%02X Err=%02X)\n",
+                   (unsigned long)polls, (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000),
+                   PCD_ReadRegister(mfrc, TModeReg), PCD_ReadRegister(mfrc, TxControlReg),
+                   PCD_ReadRegister(mfrc, CommandReg), PCD_ReadRegister(mfrc, ErrorReg));
+            lost = true; break;
+        }
+        sleep_ms(50);
+    }
+    if (!lost) printf("DIAG E: PCD_Init + polling              ok for 3000 ms (%lu polls)\n", (unsigned long)polls);
+    // F: polling without the antenna gain change
+    diag_soft_init(mfrc, false);
+    t0 = get_absolute_time(); polls = 0; lost = false;
+    while (absolute_time_diff_us(t0, get_absolute_time()) < 3000 * 1000) {
+        PICC_IsNewCardPresent(mfrc); polls++;
+        if (!diag_cfg_ok(mfrc)) {
+            printf("DIAG F: default gain + polling           LOST after %lu polls, +%lu ms\n", (unsigned long)polls,
+                   (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000));
+            lost = true; break;
+        }
+        sleep_ms(50);
+    }
+    if (!lost) printf("DIAG F: default gain + polling           ok for 3000 ms (%lu polls)\n", (unsigned long)polls);
+    // G: supply stress. 200 antenna on/off cycles, the largest current step the chip makes.
+    PCD_Init(mfrc); uint32_t resets = 0;
+    for (int i = 0; i < 200; i++) {
+        PCD_AntennaOff(mfrc); sleep_ms(5); PCD_AntennaOn(mfrc); sleep_ms(10);
+        if (!diag_cfg_ok(mfrc)) { resets++; PCD_Init(mfrc); }
+    }
+    printf("DIAG G: 200 antenna on/off cycles        %lu resets\n", (unsigned long)resets);
+    printf("DIAG done\n");
+}
+#endif
+
 int main(void) {
     stdio_init_all();
     sleep_ms(2000); // give USB-CDC time to enumerate so early logs are visible
@@ -117,12 +192,17 @@ int main(void) {
     }
 
     init_reader_blocking(mfrc);
+#ifdef RFID_DIAG
+    diag_run(mfrc);
+    PCD_Init(mfrc);
+#endif
     printf("Waiting for cards...\n");
 
     absolute_time_t next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
     absolute_time_t next_heartbeat = get_absolute_time();
     absolute_time_t reread_allowed_at = get_absolute_time();
     uint32_t consecutive_failures = 0;
+    uint32_t recoveries = 0;
 
     while (true) {
         sleep_ms(POLL_INTERVAL_MS);
@@ -134,17 +214,19 @@ int main(void) {
             printf("HB,%s\n", READER_ID);
         }
 
-        // Periodically confirm the chip still has our configuration. Only
-        // re-init when it has actually been lost, instead of blindly resetting
-        // on a timer (which used to blind the reader for >1 s every 5 s).
-        if (time_reached(next_health_check)) {
-            next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
-            if (!PCD_IsHealthy(mfrc)) {
-                printf("RC522 lost its configuration, re-initializing...\n");
-                init_reader_blocking(mfrc);
-                consecutive_failures = 0;
-                continue;
-            }
+        // Confirm the chip still has our configuration. A cheap one-register
+        // check runs on every poll (a chip reset clears the antenna-enable
+        // bits, and we measured rare resets under the antenna's current step);
+        // the full check runs once a second. Re-init only when the config is
+        // actually gone, so the reader is never blinded by a blind timer reset.
+        bool full_check = time_reached(next_health_check);
+        if (full_check) next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
+        if ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) != 0x03 || (full_check && !PCD_IsHealthy(mfrc))) {
+            recoveries++;
+            printf("RC522 lost its configuration (recovery #%lu), re-initializing...\n", (unsigned long)recoveries);
+            init_reader_blocking(mfrc);
+            consecutive_failures = 0;
+            continue;
         }
 
         if (!PICC_IsNewCardPresent(mfrc)) {
