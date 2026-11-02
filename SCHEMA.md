@@ -50,9 +50,16 @@ Today the reader prints one line per event on its USB serial port and a laptop
 script forwards it. The line formats are:
 
 ```
-SCAN,<reader_id>,<uid hex>,<1|0>     one per tag read; last field is the firmware's own verdict
-HB,<reader_id>                       every 30 seconds (HEARTBEAT_MS in blink_any.c)
+BOOT,<reader_id>,<boot_id>,pending=<n>             at start-up and in reply to HELLO
+SCAN,<reader_id>,<uid hex>,<1|0>,<boot_id>,<seq>   one per tag read; <1|0> is the firmware's own verdict
+HB,<reader_id>,pending=<n>,dropped=<n>             every 30 seconds (HEARTBEAT_MS in blink_any.c)
+WARN,<reader_id>,<text>                            buffer full, oldest scan dropped
 ```
+
+The reader keeps up to 64 scans in memory until the bridge writes `ACK,<seq>`
+back, re-sending them every 3 seconds, so a disconnected laptop or a server
+restart does not lose a read. The bridge acknowledges only after the server has
+stored the scan.
 
 Reader IDs in use come from `dashboard/readers.json`: `rack-01` Memorial Union,
 `rack-02` Hayden Library, `rack-03` Engineering Center (ECG), `rack-04` Sun Devil
@@ -118,7 +125,7 @@ Liveness is tracked in the `reader_status` table.
 | Field | Type | Required | Notes |
 | :--- | :--- | :--- | :--- |
 | `id` | INTEGER, primary key | yes | **Implemented.** Auto-increment, assigned by the server. |
-| `event_id` | TEXT, UUID v4 | yes | **Planned.** Generated on the reader; idempotency key for resends (see wire format). |
+| `event_id` | TEXT, unique | no | **Implemented** as `<reader_id>-<boot_id>-<seq>` (for example `rack-01-5EAFC93E-12`), built by the bridge from the reader's random per-boot id and its scan counter. Idempotency key: a repeat is ignored. The UUID form is still the plan for Wi-Fi readers. |
 | `ts` | TEXT | yes | UTC time of the read. Today the server stamps it on arrival; a reader-supplied `ts` is accepted if present. |
 | `reader_id` | TEXT | yes | The reader that saw the tag. Stored even if it is not in `readers.json` (that raises an alert). |
 | `uid` | TEXT | yes | Tag UID, normalised like `tags.uid`. |
@@ -279,7 +286,9 @@ rules 3, 9 and 10 refuse the whole request.
 `event_id` is the idempotency key. It is stored with a unique index, and an event
 whose `event_id` already exists is reported as `duplicate` and otherwise ignored.
 That makes buffered resends safe: if the reader sent a batch, lost the response, and
-sends the same batch again, nothing is stored twice.
+sends the same batch again, nothing is stored twice. This part is implemented today
+for the serial path: `POST /api/scans` accepts an optional `event_id` and answers
+`200` with `"duplicate": true` for a repeat instead of storing it again.
 
 ### Error codes
 

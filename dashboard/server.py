@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS scans (
     reader_id  TEXT NOT NULL,
     uid        TEXT NOT NULL,
     authorized INTEGER NOT NULL,
-    reason     TEXT NOT NULL DEFAULT 'unregistered'
+    reason     TEXT NOT NULL DEFAULT 'unregistered',
+    event_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scans_ts ON scans(ts);
 CREATE INDEX IF NOT EXISTS idx_scans_uid ON scans(uid);
@@ -184,6 +185,10 @@ def open_db():
     scan_cols = [r["name"] for r in db.execute("PRAGMA table_info(scans)")]
     if "reason" not in scan_cols:
         db.execute("ALTER TABLE scans ADD COLUMN reason TEXT NOT NULL DEFAULT 'unregistered'")
+    if "event_id" not in scan_cols:
+        db.execute("ALTER TABLE scans ADD COLUMN event_id TEXT")
+    # event_id is the idempotency key for re-sent scans (reader-boot-seq); unique when present
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scans_event ON scans(event_id) WHERE event_id IS NOT NULL")
     tag_cols = [r["name"] for r in db.execute("PRAGMA table_info(tags)")]
     if "owner_id" not in tag_cols:
         db.execute("ALTER TABLE tags ADD COLUMN owner_id INTEGER")
@@ -225,11 +230,17 @@ def touch_reader(db, reader_id, ts):
                "AND reader_id = ? AND acknowledged = 0", (reader_id,))
 
 
-def insert_scan(db, reader_id, uid, ts=None, readers=None):
-    """Judge the scan against the registry, store it, raise alerts. Returns the scan row."""
+def insert_scan(db, reader_id, uid, ts=None, readers=None, event_id=None):
+    """Judge the scan against the registry, store it, raise alerts. Returns the scan row
+    as a dict; if event_id was already stored, returns that existing row with
+    "duplicate": True and changes nothing."""
     ts = ts or iso(utcnow())
     uid = norm_uid(uid)
     readers = readers if readers is not None else load_readers()
+    if event_id:
+        existing = db.execute("SELECT * FROM scans WHERE event_id = ?", (event_id,)).fetchone()
+        if existing:
+            return {**dict(existing), "duplicate": True}
     tag = db.execute("SELECT * FROM tags WHERE uid = ?", (uid,)).fetchone()
     if tag and tag["authorized"]:
         authorized, reason = 1, "registered"
@@ -238,8 +249,8 @@ def insert_scan(db, reader_id, uid, ts=None, readers=None):
     else:
         authorized, reason = 0, "unregistered"
 
-    cur = db.execute("INSERT INTO scans (ts, reader_id, uid, authorized, reason) VALUES (?,?,?,?,?)",
-                     (ts, reader_id, uid, authorized, reason))
+    cur = db.execute("INSERT INTO scans (ts, reader_id, uid, authorized, reason, event_id) VALUES (?,?,?,?,?,?)",
+                     (ts, reader_id, uid, authorized, reason, event_id or None))
     scan_id = cur.lastrowid
     touch_reader(db, reader_id, ts)
 
@@ -259,7 +270,7 @@ def insert_scan(db, reader_id, uid, ts=None, readers=None):
             raise_alert(db, ts, "repeated_denied", "critical",
                         f"Tag {uid} denied {n} times in {REPEAT_WINDOW_MIN} minutes (last at {where})", reader_id, uid)
     db.commit()
-    return dict(db.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone())
+    return {**dict(db.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()), "duplicate": False}
 
 
 def check_offline(db, readers):
@@ -578,16 +589,21 @@ class Handler(SimpleHTTPRequestHandler):
         if not reader_id or not uid:
             return self._json(400, {"error": "reader_id and uid are required"})
         readers = load_readers()
+        event_id = str(data["event_id"]).strip()[:64] if data.get("event_id") else None
         db = open_db()
-        scan = insert_scan(db, reader_id, uid, data.get("ts"), readers)
+        scan = insert_scan(db, reader_id, uid, data.get("ts"), readers, event_id)
         db.close()
         verdict = "AUTHORIZED" if scan["authorized"] else f"DENIED ({scan['reason']})"
+        if scan["duplicate"]:
+            print(f"scan #{scan['id']}: duplicate of {event_id}, ignored")
+            return self._json(200, {"id": scan["id"], "authorized": bool(scan["authorized"]),
+                                    "reason": scan["reason"], "known_reader": reader_id in readers, "duplicate": True})
         print(f"scan #{scan['id']}: {reader_id} {uid} {verdict}" + ("" if reader_id in readers else "  (reader not in readers.json)"))
         dev = data.get("device_authorized")
         if dev is not None and bool(dev) != bool(scan["authorized"]):
             print(f"  ! firmware said {'AUTHORIZED' if dev else 'DENIED'} but registry says {verdict}")
         self._json(201, {"id": scan["id"], "authorized": bool(scan["authorized"]),
-                         "reason": scan["reason"], "known_reader": reader_id in readers})
+                         "reason": scan["reason"], "known_reader": reader_id in readers, "duplicate": False})
 
     def delete_scans(self, q):
         db = open_db()

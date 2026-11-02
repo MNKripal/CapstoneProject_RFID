@@ -276,7 +276,16 @@ void PCD_Init(MFRC522Ptr_t mfrc) {
 	// Oscillator start-up time: crystal start-up + 37.74 us. Be generous.
 	sleep_ms(50);
 
-	// Soft reset as well, and wait until the chip reports it is ready.
+	PCD_Configure(mfrc);
+} // End PCD_Init()
+
+/**
+ * Soft reset and full register configuration, without touching the reset pin.
+ * Takes a few milliseconds; use it to recover a chip that is still answering
+ * on SPI but has lost its configuration (e.g. after a brown-out reset).
+ */
+void PCD_Configure(MFRC522Ptr_t mfrc) {
+	// Soft reset, and wait until the chip reports it is ready.
 	PCD_Reset(mfrc);
 
 	// Reset baud rates and modulation width to their defaults. A previous
@@ -319,7 +328,7 @@ void PCD_Init(MFRC522Ptr_t mfrc) {
 
 	PCD_AntennaOn(mfrc); // Enable the antenna driver pins TX1 and TX2 (they
 						 // were disabled by the reset)
-} // End PCD_Init()
+} // End PCD_Configure()
 
 /**
  * Performs a soft reset on the MFRC522 chip and waits for it to be ready again.
@@ -332,12 +341,15 @@ void PCD_Reset(MFRC522Ptr_t mfrc) {
 	// (triggered by bit 4 of CommandReg). Section 8.8.2 in the datasheet says
 	// the oscillator start-up time is the start up time of the crystal +
 	// 37.74 us. Let us be generous: 50ms.
-	uint8_t count = 0;
-	do {
-		sleep_ms(50);
-		// Wait for the PowerDown bit in CommandReg to be cleared. Give up
-		// after 3 tries (150 ms) so a disconnected reader cannot hang us.
-	} while ((PCD_ReadRegister(mfrc, CommandReg) & (1 << 4)) && (++count) < 3);
+	// The reset itself completes in well under a millisecond on a running
+	// chip, so poll the PowerDown bit every millisecond and give up after
+	// 150 ms so a disconnected reader cannot hang us.
+	for (int i = 0; i < 150; i++) {
+		sleep_ms(1);
+		if ((PCD_ReadRegister(mfrc, CommandReg) & (1 << 4)) == 0) {
+			break;
+		}
+	}
 } // End PCD_Reset()
 
 /**

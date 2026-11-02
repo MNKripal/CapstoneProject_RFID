@@ -1,7 +1,11 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
+#include "pico/rand.h"
 #include "mfrc522.h"
 
 /* ---------------------------------------------------------------------------
@@ -42,6 +46,14 @@
 // Heartbeat interval. The dashboard marks a reader offline when it stops
 // hearing these (see dashboard/server.py OFFLINE_AFTER_S).
 #define HEARTBEAT_MS          30000
+// Scans are kept in memory until the host acknowledges them (ACK,<seq>) and
+// are re-sent at this interval, so a disconnected laptop or a server restart
+// does not lose a read. PENDING_MAX bounds the memory; oldest is dropped first.
+#define RESEND_MS             3000
+#define PENDING_MAX           64
+// How many times to retry the UID read within one poll when the card answered
+// the request but the anticollision step failed (card still moving in).
+#define UID_READ_RETRIES      2
 
 // Identifier of this reader station. Each physical reader is bolted to a known
 // bike rack; the dashboard maps this ID to a campus location (dashboard/readers.json).
@@ -49,6 +61,93 @@
 
 static const uint8_t AUTHORIZED_UID[] = {0xDE, 0xAD, 0xBE, 0xEF};
 #define AUTHORIZED_UID_LEN (sizeof(AUTHORIZED_UID) / sizeof(AUTHORIZED_UID[0]))
+
+/* ---------------------------------------------------------------------------
+ * Acknowledged scan buffer.
+ *
+ * Every scan gets a sequence number and is printed as
+ *   SCAN,<reader_id>,<uid hex>,<1|0>,<boot_id hex>,<seq>
+ * It stays in `pending` until the host writes "ACK,<seq>" back over the same
+ * serial port; until then it is re-printed every RESEND_MS. boot_id is random
+ * per power-up so <reader_id>-<boot_id>-<seq> is a unique id for the event
+ * even across reboots (the server uses it to drop duplicates).
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    bool     used;
+    uint32_t seq;
+    uint8_t  uid[10];
+    uint8_t  size;
+    bool     authorized;
+} pending_scan_t;
+
+static pending_scan_t pending[PENDING_MAX];
+static uint32_t next_seq = 1;
+static uint32_t boot_id;
+static uint32_t dropped_scans = 0;
+
+static void print_scan(const pending_scan_t *p) {
+    printf("SCAN,%s,", READER_ID);
+    for (uint8_t i = 0; i < p->size; i++) printf("%02X", p->uid[i]);
+    printf(",%d,%08lX,%lu\n", p->authorized ? 1 : 0, (unsigned long)boot_id, (unsigned long)p->seq);
+}
+
+static uint32_t pending_count(void) {
+    uint32_t n = 0;
+    for (int i = 0; i < PENDING_MAX; i++) if (pending[i].used) n++;
+    return n;
+}
+
+static void pending_add(const Uid *uid, bool authorized) {
+    int slot = -1;
+    for (int i = 0; i < PENDING_MAX; i++) if (!pending[i].used) { slot = i; break; }
+    if (slot < 0) {   // full: drop the oldest so the newest read is kept
+        slot = 0;
+        for (int i = 1; i < PENDING_MAX; i++) if (pending[i].seq < pending[slot].seq) slot = i;
+        dropped_scans++;
+        printf("WARN,%s,buffer full, dropped scan seq %lu (host not acknowledging)\n", READER_ID, (unsigned long)pending[slot].seq);
+    }
+    pending_scan_t *p = &pending[slot];
+    p->used = true; p->seq = next_seq++; p->size = uid->size; p->authorized = authorized;
+    memcpy(p->uid, uid->uidByte, uid->size);
+    print_scan(p);
+}
+
+static void pending_ack(uint32_t seq) {
+    for (int i = 0; i < PENDING_MAX; i++) if (pending[i].used && pending[i].seq == seq) pending[i].used = false;
+}
+
+static void pending_resend(void) {
+    // oldest first, so the host sees events in order
+    for (;;) {
+        int best = -1;
+        for (int i = 0; i < PENDING_MAX; i++)
+            if (pending[i].used && !(pending[i].seq & 0x80000000u) && (best < 0 || pending[i].seq < pending[best].seq)) best = i;
+        if (best < 0) break;
+        print_scan(&pending[best]);
+        pending[best].seq |= 0x80000000u;   // mark visited for this pass
+    }
+    for (int i = 0; i < PENDING_MAX; i++) pending[i].seq &= 0x7FFFFFFFu;
+}
+
+// Read whatever the host has typed/sent, one line at a time, without blocking.
+static void poll_host_input(void) {
+    static char line[32];
+    static uint8_t len = 0;
+    for (int guard = 0; guard < 64; guard++) {
+        int c = getchar_timeout_us(0);
+        if (c == PICO_ERROR_TIMEOUT || c < 0) return;
+        if (c == '\r') continue;
+        if (c != '\n') { if (len < sizeof(line) - 1) line[len++] = (char)c; continue; }
+        line[len] = 0; len = 0;
+        if (strncmp(line, "ACK,", 4) == 0) {
+            pending_ack((uint32_t)strtoul(line + 4, NULL, 10));
+        } else if (strcmp(line, "RESEND") == 0) {
+            pending_resend();
+        } else if (strcmp(line, "HELLO") == 0) {
+            printf("BOOT,%s,%08lX,pending=%lu\n", READER_ID, (unsigned long)boot_id, (unsigned long)pending_count());
+        }
+    }
+}
 
 static void setup_spi(void) {
     spi_init(SPI_PORT, SPI_BAUD_HZ);
@@ -79,6 +178,21 @@ static void init_reader_blocking(MFRC522Ptr_t mfrc) {
                PIN_CS, PIN_SCK, PIN_MOSI, PIN_MISO, PIN_RST);
         sleep_ms(1000);
     }
+}
+
+// Read the UID; if the card answered the request but the anticollision step
+// failed (typically a card still sliding into the field), wake it and retry
+// a couple of times within this same poll instead of waiting for the next one.
+static bool read_uid_with_retry(MFRC522Ptr_t mfrc) {
+    if (PICC_ReadCardSerial(mfrc)) return true;
+    for (int i = 0; i < UID_READ_RETRIES; i++) {
+        sleep_ms(5);
+        uint8_t atqa[2]; uint8_t n = sizeof(atqa);
+        StatusCode st = PICC_WakeupA(mfrc, atqa, &n);
+        if (st != STATUS_OK && st != STATUS_COLLISION) continue;
+        if (PICC_ReadCardSerial(mfrc)) return true;
+    }
+    return false;
 }
 
 static bool uid_is_authorized(const Uid *uid) {
@@ -192,6 +306,8 @@ int main(void) {
     }
 
     init_reader_blocking(mfrc);
+    boot_id = get_rand_32();
+    printf("BOOT,%s,%08lX,pending=0\n", READER_ID, (unsigned long)boot_id);
 #ifdef RFID_DIAG
     diag_run(mfrc);
     PCD_Init(mfrc);
@@ -200,6 +316,7 @@ int main(void) {
 
     absolute_time_t next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
     absolute_time_t next_heartbeat = get_absolute_time();
+    absolute_time_t next_resend = make_timeout_time_ms(RESEND_MS);
     absolute_time_t reread_allowed_at = get_absolute_time();
     uint32_t consecutive_failures = 0;
     uint32_t recoveries = 0;
@@ -211,7 +328,15 @@ int main(void) {
         //   HB,<reader_id>
         if (time_reached(next_heartbeat)) {
             next_heartbeat = make_timeout_time_ms(HEARTBEAT_MS);
-            printf("HB,%s\n", READER_ID);
+            printf("HB,%s,pending=%lu,dropped=%lu\n", READER_ID, (unsigned long)pending_count(), (unsigned long)dropped_scans);
+        }
+
+        // Host side of the acknowledgement protocol, and periodic re-send of
+        // anything not yet acknowledged.
+        poll_host_input();
+        if (time_reached(next_resend)) {
+            next_resend = make_timeout_time_ms(RESEND_MS);
+            if (stdio_usb_connected()) pending_resend();
         }
 
         // Confirm the chip still has our configuration. A cheap one-register
@@ -223,7 +348,17 @@ int main(void) {
         if (full_check) next_health_check = make_timeout_time_ms(HEALTH_CHECK_MS);
         if ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) != 0x03 || (full_check && !PCD_IsHealthy(mfrc))) {
             recoveries++;
-            printf("RC522 lost its configuration (recovery #%lu), re-initializing...\n", (unsigned long)recoveries);
+            if (PCD_IsResponding(mfrc)) {
+                // Chip is alive, only its registers were reset: soft re-configure
+                // (a few ms) instead of a full hardware reset (~250 ms).
+                PCD_Configure(mfrc);
+                if (PCD_IsHealthy(mfrc)) {
+                    printf("RC522 lost its configuration (recovery #%lu), re-configured\n", (unsigned long)recoveries);
+                    consecutive_failures = 0;
+                    continue;
+                }
+            }
+            printf("RC522 not responding (recovery #%lu), full re-init...\n", (unsigned long)recoveries);
             init_reader_blocking(mfrc);
             consecutive_failures = 0;
             continue;
@@ -238,7 +373,7 @@ int main(void) {
             continue;
         }
 
-        if (!PICC_ReadCardSerial(mfrc)) {
+        if (!read_uid_with_retry(mfrc)) {
             consecutive_failures++;
             printf("Card present but UID read failed (%lu in a row)\n",
                    (unsigned long)consecutive_failures);
@@ -262,13 +397,9 @@ int main(void) {
             printf(">>> DENIED: Unauthorized Tag.\n");
         }
 
-        // Machine-readable log line consumed by dashboard/serial_bridge.py:
-        //   SCAN,<reader_id>,<uid hex without spaces>,<1 if authorized else 0>
-        printf("SCAN,%s,", READER_ID);
-        for (uint8_t i = 0; i < mfrc->uid.size; i++) {
-            printf("%02X", mfrc->uid.uidByte[i]);
-        }
-        printf(",%d\n", authorized ? 1 : 0);
+        // Machine-readable log line consumed by dashboard/serial_bridge.py,
+        // kept in the pending buffer until the bridge acknowledges it.
+        pending_add(&mfrc->uid, authorized);
 
         // Put the card to sleep so it is not reported again until removed
         // and re-presented, and leave the reader in a clean state.

@@ -32,6 +32,7 @@ add_executable(blink_any
 
 target_link_libraries(blink_any
     pico_stdlib
+    pico_rand
     hardware_spi
 )
 

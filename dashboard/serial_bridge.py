@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Forwards scans and heartbeats from the Pico's USB serial output to the dashboard server.
+Forwards scans and heartbeats from the Pico's USB serial output to the dashboard
+server, and acknowledges each scan so the reader can drop it from its buffer.
 
-The firmware prints:
-    SCAN,<reader_id>,<uid hex>,<1|0>     one line per tag read (last field: firmware's own verdict)
-    HB,<reader_id>                       every 30 s, so the server can tell the reader is alive
-This script POSTs both to the server. The server's tag registry makes the
-final authorized/denied decision; if it disagrees with the firmware's
-hard-coded UID, a warning is printed here.
+Lines the firmware prints:
+    BOOT,<reader_id>,<boot_id>,pending=<n>              at start-up and in reply to HELLO
+    SCAN,<reader_id>,<uid hex>,<1|0>,<boot_id>,<seq>    one per tag read (re-sent every 3 s until acknowledged)
+    HB,<reader_id>,pending=<n>,dropped=<n>              every 30 s
+    WARN,<reader_id>,<text>                             buffer full, a scan was dropped
+Lines this script writes back:
+    HELLO                                               on connect, asks the reader to re-send what is pending
+    ACK,<seq>                                           after a scan was stored by the server
+
+Delivery guarantee: a scan is acknowledged only after the server has stored it.
+If the server is down the reader keeps re-sending, and the server ignores a
+repeat of the same <reader>-<boot>-<seq> event id, so nothing is lost or doubled.
 
 The server only accepts scans that carry the device key (dashboard/device_key.txt,
 created the first time server.py runs). The bridge reads that file automatically
@@ -19,6 +26,7 @@ Requires pyserial:  python3 -m pip install pyserial
     python3 serial_bridge.py --port /dev/cu.usbmodem1101 --server http://localhost:8080
 """
 import argparse
+import functools
 import glob
 import json
 import os
@@ -27,10 +35,14 @@ import time
 import urllib.error
 import urllib.request
 
+print = functools.partial(print, flush=True)  # show lines immediately even when piped to a file
+
 try:
     import serial
 except ImportError:
     sys.exit("pyserial is not installed. Run:  python3 -m pip install pyserial")
+
+DEVICE_KEY = ""
 
 
 def find_port():
@@ -38,9 +50,6 @@ def find_port():
     if not candidates:
         sys.exit("No Pico serial port found. Plug it in, or pass --port.")
     return candidates[0]
-
-
-DEVICE_KEY = ""
 
 
 def post(server, path, payload):
@@ -51,21 +60,45 @@ def post(server, path, payload):
         return json.loads(resp.read())
 
 
-def handle_line(line, server):
+def handle_line(line, server, ser, stored):
+    """Process one line from the reader. `stored` is the set of event ids already
+    confirmed by the server in this session; `ser` is used to write ACKs."""
     parts = line.split(",")
-    if parts[0] == "HB" and len(parts) == 2:
+    kind = parts[0]
+    if kind == "HB" and len(parts) >= 2:
         r = post(server, "/api/heartbeat", {"reader_id": parts[1].strip()})
         if not r.get("known_reader"):
             print(f"  ! reader '{parts[1].strip()}' is not in readers.json")
-    elif parts[0] == "SCAN" and len(parts) == 4:
-        _, reader_id, uid, auth = parts
-        device_auth = auth.strip() == "1"
-        r = post(server, "/api/scans", {"reader_id": reader_id, "uid": uid, "device_authorized": device_auth})
+        extra = [p for p in parts[2:] if not p.startswith("pending=0") and not p.startswith("dropped=0")]
+        if extra:
+            print(f"  reader reports {', '.join(extra)}")
+    elif kind == "SCAN" and len(parts) >= 4:
+        reader_id, uid, auth = parts[1], parts[2], parts[3].strip() == "1"
+        event_id = None
+        seq = None
+        if len(parts) >= 6:                      # new format with boot id and sequence number
+            event_id = f"{reader_id}-{parts[4]}-{parts[5].strip()}"
+            seq = parts[5].strip()
+        if event_id and event_id in stored:       # a re-send of something we already stored: just ACK again
+            ser.write(f"ACK,{seq}\n".encode())
+            return
+        payload = {"reader_id": reader_id, "uid": uid, "device_authorized": auth}
+        if event_id:
+            payload["event_id"] = event_id
+        r = post(server, "/api/scans", payload)
         verdict = "AUTHORIZED" if r["authorized"] else f"DENIED ({r['reason']})"
-        print(f"  -> scan #{r['id']} {verdict}" + ("" if r.get("known_reader") else "  (reader id not in readers.json)"))
-        if device_auth != r["authorized"]:
-            print(f"  ! firmware said {'AUTHORIZED' if device_auth else 'DENIED'} but the registry says {verdict}. "
+        dup = "  (server already had it)" if r.get("duplicate") else ""
+        print(f"  -> scan #{r['id']} {verdict}{dup}" + ("" if r.get("known_reader") else "  (reader id not in readers.json)"))
+        if auth != r["authorized"]:
+            print(f"  ! firmware said {'AUTHORIZED' if auth else 'DENIED'} but the registry says {verdict}. "
                   f"Update AUTHORIZED_UID in blink_any.c or the registry so they agree.")
+        if event_id:
+            stored.add(event_id)
+            ser.write(f"ACK,{seq}\n".encode())
+    elif kind == "BOOT":
+        print(f"  reader {parts[1] if len(parts) > 1 else '?'} is up (boot {parts[2] if len(parts) > 2 else '?'}, {parts[3] if len(parts) > 3 else ''})")
+    elif kind == "WARN":
+        print(f"  ! reader warning: {','.join(parts[2:])}")
     else:
         print("  ! malformed line ignored")
 
@@ -90,10 +123,12 @@ def main():
 
     port = args.port or find_port()
     print(f"Listening on {port}, forwarding to {args.server}")
+    stored = set()
 
     while True:
         try:
             with serial.Serial(port, args.baud, timeout=1) as ser:
+                ser.write(b"HELLO\n")           # ask the reader to re-send anything it is still holding
                 while True:
                     raw = ser.readline()
                     if not raw:
@@ -103,15 +138,16 @@ def main():
                         continue
                     if not line.startswith("HB,"):
                         print(f"[pico] {line}")
-                    if line.startswith(("SCAN,", "HB,")):
+                    if line.startswith(("SCAN,", "HB,", "BOOT,", "WARN,")):
                         try:
-                            handle_line(line, args.server)
+                            handle_line(line, args.server, ser, stored)
                         except urllib.error.HTTPError as e:
                             print(f"  ! server rejected it: {e.code} {e.read().decode(errors='replace')[:120]}")
                         except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
-                            print(f"  ! could not forward to server: {e}")
+                            print(f"  ! could not forward to server: {e}  (the reader will re-send it)")
         except serial.SerialException as e:
             print(f"Serial error: {e}. Retrying in 2 s...")
+            stored.clear()
             time.sleep(2)
         except KeyboardInterrupt:
             print("\nBye")

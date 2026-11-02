@@ -323,6 +323,7 @@ StatusCode PCD_CalculateCRC(MFRC522Ptr_t mfrc, uint8_t *data, uint8_t length,
 * Functions for manipulating the MFRC522
 *******************************************************************************/
 void PCD_Init(MFRC522Ptr_t mfrc);
+void PCD_Configure(MFRC522Ptr_t mfrc);
 void PCD_Reset(MFRC522Ptr_t mfrc);
 bool PCD_IsResponding(MFRC522Ptr_t mfrc);
 bool PCD_IsHealthy(MFRC522Ptr_t mfrc);
