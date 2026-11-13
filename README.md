@@ -162,6 +162,13 @@ scan it has already received from either path.
 
 If `wifi_config.h` is absent the firmware builds without Wi-Fi.
 
+Two hotspot lessons from the bench: iPhones write the hotspot name with a curly
+apostrophe (set `WIFI_SSID_ALT` to the other spelling to be safe), and they often stop
+answering DHCP for a board that reboots within its lease, which shows on serial as
+`joined, waiting for an IP address`. Either restart Personal Hotspot, or give the board a
+fixed address with `STATIC_IP`, `STATIC_MASK` and `STATIC_GW` (iPhone hotspots are always
+172.20.10.1/28). The fixed address is the reliable choice for a wall-powered reader.
+
 ## How authorization works
 
 The server keeps the tag registry and makes the final decision on every scan:
