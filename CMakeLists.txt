@@ -28,12 +28,17 @@ pico_sdk_init()
 add_executable(blink_any
     blink_any.c
     mfrc522.c
+    net.c
 )
+
+# lwipopts.h and (optional, git-ignored) wifi_config.h live next to the sources
+target_include_directories(blink_any PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
 target_link_libraries(blink_any
     pico_stdlib
     pico_rand
     hardware_spi
+    pico_cyw43_arch_lwip_threadsafe_background
 )
 
 # Diagnostic build: cmake -DRFID_DIAG=ON ... prints register changes after boot

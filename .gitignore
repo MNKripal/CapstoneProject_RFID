@@ -1,5 +1,6 @@
 build/
 dashboard/scans.db
 dashboard/device_key.txt
+wifi_config.h
 __pycache__/
 .DS_Store

@@ -138,6 +138,30 @@ the dashboard within a few seconds.
 Passwords are stored as salted PBKDF2 hashes. Sessions are HttpOnly cookies that
 last 30 days. The server never serves the database, the device key or its own code.
 
+## Wi-Fi mode (optional)
+
+The reader can post scans and heartbeats to the server directly over Wi-Fi, with no
+laptop in between. The USB path keeps working as a fallback, and the server ignores a
+scan it has already received from either path.
+
+1. The Pico 2 W joins WPA2 personal networks only (a plain SSID and password).
+   ASU's eduroam uses enterprise login and will not work; use a phone hotspot or a
+   home router, and put the laptop that runs the server on the same network.
+2. Copy `wifi_config.example.h` to `wifi_config.h` (git ignores it) and fill in the
+   SSID, password, the laptop's IP address, and the device key from
+   `dashboard/device_key.txt`.
+3. Start the server so it listens on the network, not just localhost:
+
+   ```
+   python3 server.py --host 0.0.0.0
+   ```
+
+4. Rebuild and flash. The serial output shows `WIFI,connecting`, then
+   `WIFI,connected,<ip>`. Each scan is followed by a `SERVER,...,AUTHORIZED` or
+   `DENIED` line: that is the registry's verdict, returned by the server.
+
+If `wifi_config.h` is absent the firmware builds without Wi-Fi.
+
 ## How authorization works
 
 The server keeps the tag registry and makes the final decision on every scan:
