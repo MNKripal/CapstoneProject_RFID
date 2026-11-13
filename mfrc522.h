@@ -327,6 +327,8 @@ void PCD_Configure(MFRC522Ptr_t mfrc);
 void PCD_Reset(MFRC522Ptr_t mfrc);
 bool PCD_IsResponding(MFRC522Ptr_t mfrc);
 bool PCD_IsHealthy(MFRC522Ptr_t mfrc);
+void PCD_SetTxMask(uint8_t mask);   // 0x03 = TX1+TX2 (default), 0x01 = TX1 only
+uint8_t PCD_GetTxMask(void);
 void PCD_AntennaOn(MFRC522Ptr_t mfrc);
 void PCD_AntennaOff(MFRC522Ptr_t mfrc);
 uint8_t PCD_GetAntennaGain(MFRC522Ptr_t mfrc);

@@ -9,6 +9,13 @@
 // ADT object allocation counter
 static int MFRC_Instance_Counter = 0;
 
+// Which antenna driver outputs to enable: 0x03 = TX1+TX2 (full drive, most
+// range), 0x01 = TX1 only (about half the transmitter current). On a weak
+// 3.3 V supply the full drive can brown the chip out when a card loads the
+// antenna; TX1 only was measured to be reliable there.
+static uint8_t PCD_TxMask = 0x03;
+
+
 // Expected self-test output for a genuine MFRC522 v1.0 (datasheet 16.1.1)
 static const uint8_t SELF_TEST_BYTES[] = {
 	0x00, 0xEB, 0x66, 0xBA, 0x57, 0xBF, 0x23, 0x95,
@@ -372,7 +379,7 @@ bool PCD_IsHealthy(MFRC522Ptr_t mfrc) {
 	if (!PCD_IsResponding(mfrc)) {
 		return false;
 	}
-	if ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) != 0x03) {
+	if ((PCD_ReadRegister(mfrc, TxControlReg) & 0x03) != PCD_TxMask) {
 		return false; // Antenna is off => chip was reset behind our back
 	}
 	if ((PCD_ReadRegister(mfrc, TModeReg) & 0x80) == 0) {
@@ -381,14 +388,22 @@ bool PCD_IsHealthy(MFRC522Ptr_t mfrc) {
 	return true;
 } // End PCD_IsHealthy()
 
+void PCD_SetTxMask(uint8_t mask) {
+	PCD_TxMask = mask & 0x03 ? (mask & 0x03) : 0x03;
+}
+
+uint8_t PCD_GetTxMask(void) {
+	return PCD_TxMask;
+}
+
 /**
- * Turns the antenna on by enabling pins TX1 and TX2.
+ * Turns the antenna on by enabling the configured driver pins (see PCD_SetTxMask).
  * After a reset these pins are disabled.
  */
 void PCD_AntennaOn(MFRC522Ptr_t mfrc) {
 	uint8_t value = PCD_ReadRegister(mfrc, TxControlReg);
-	if ((value & 0x03) != 0x03) {
-		PCD_WriteRegister(mfrc, TxControlReg, value | 0x03);
+	if ((value & 0x03) != PCD_TxMask) {
+		PCD_WriteRegister(mfrc, TxControlReg, (value & ~0x03) | PCD_TxMask);
 	}
 } // End PCD_AntennaOn()
 
