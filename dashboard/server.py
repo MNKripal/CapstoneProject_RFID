@@ -391,6 +391,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.user = None
         super().__init__(*args, directory=HERE, **kwargs)
 
+    def handle(self):
+        # A browser closing its event stream (or any client going away mid-response)
+        # is normal; don't let it print a traceback.
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+
     # ---- helpers
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")

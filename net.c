@@ -5,17 +5,21 @@
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/dhcp.h"
+#include "lwip/netif.h"
 
 #define REQ_MAX   1024
 #define RESP_MAX  1024
 #define REQ_TIMEOUT_MS   6000
 #define RECONNECT_MS     20000
+#define DHCP_PATIENCE_MS 90000   // associated but no IP yet: wait this long before restarting the join
 
 static struct {
     const char *ssid, *ssid_alt, *password;
     bool use_alt;
     bool initialised, connecting;
     absolute_time_t next_attempt;
+    absolute_time_t join_started;
     char ip[16];
 } W;
 
@@ -29,11 +33,34 @@ static struct {
 } R;
 
 /* ---------------------------------------------------------------- Wi-Fi link */
+// Optional fixed address (set by net_set_static_ip before net_start). Some
+// hotspots, iPhones in particular, associate the board but never answer its
+// DHCP request; a static address on the hotspot's subnet sidesteps that.
+static struct { bool set; ip4_addr_t ip, mask, gw; } ST;
+
+void net_set_static_ip(const char *ip, const char *mask, const char *gw) {
+    ST.set = ip4addr_aton(ip, &ST.ip) && ip4addr_aton(mask, &ST.mask) && ip4addr_aton(gw, &ST.gw);
+    if (!ST.set) printf("WIFI,static ip config invalid, using DHCP\n");
+}
+
+static void net_apply_static_ip(void) {
+    if (!ST.set) return;
+    cyw43_arch_lwip_begin();
+    struct netif *n = &cyw43_state.netif[CYW43_ITF_STA];
+    dhcp_stop(n);
+    netif_set_addr(n, &ST.ip, &ST.mask, &ST.gw);
+    cyw43_arch_lwip_end();
+    printf("WIFI,static ip %s\n", ip4addr_ntoa(&ST.ip));
+}
 void net_start(const char *ssid, const char *ssid_alt, const char *password) {
     W.ssid = ssid; W.ssid_alt = (ssid_alt && ssid_alt[0]) ? ssid_alt : NULL; W.password = password;
     if (cyw43_arch_init()) { printf("WIFI,init failed\n"); return; }
     cyw43_arch_enable_sta_mode();
-    cyw43_wifi_pm(&cyw43_state, CYW43_PERFORMANCE_PM);
+    net_apply_static_ip();
+    // Power save off: with it on, the CYW43 can sleep through DHCP replies and
+    // incoming packets, which showed up as "joined, waiting for an IP" forever.
+    // Story #113 (power optimisation) will revisit this with measurements.
+    cyw43_wifi_pm(&cyw43_state, CYW43_NONE_PM);
     W.initialised = true;
     W.next_attempt = get_absolute_time();
     strcpy(W.ip, "-");
@@ -43,6 +70,7 @@ static void try_connect(void) {
     const char *ssid = (W.use_alt && W.ssid_alt) ? W.ssid_alt : W.ssid;
     int rc = cyw43_arch_wifi_connect_async(ssid, W.password, CYW43_AUTH_WPA2_AES_PSK);
     W.connecting = (rc == 0);
+    W.join_started = get_absolute_time();
     W.next_attempt = make_timeout_time_ms(RECONNECT_MS);
     printf("WIFI,connecting to \"%s\"%s%s\n", ssid, W.use_alt ? " (alternate spelling)" : "", rc ? " (start failed)" : "");
 }
@@ -145,8 +173,17 @@ void net_poll(void) {
     } else {
         if (strcmp(W.ip, "-") != 0) { printf("WIFI,disconnected\n"); strcpy(W.ip, "-"); }
         if (time_reached(W.next_attempt)) {
-            // Say why the last attempt did not get a link before trying again.
             int ws = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+            // Associated and waiting for DHCP: restarting the join would restart
+            // DHCP too. Give it time; only report progress.
+            if ((ws == CYW43_LINK_JOIN || ws == CYW43_LINK_NOIP) &&
+                absolute_time_diff_us(W.join_started, get_absolute_time()) < (int64_t)DHCP_PATIENCE_MS * 1000) {
+                printf("WIFI,joined, waiting for an IP address (%lu s)\n",
+                       (unsigned long)(absolute_time_diff_us(W.join_started, get_absolute_time()) / 1000000));
+                W.next_attempt = make_timeout_time_ms(10000);
+                return;
+            }
+            // Say why the last attempt did not get a link before trying again.
             const char *why = ws == CYW43_LINK_NONET ? "network not found (2.4 GHz on? name exact?)"
                             : ws == CYW43_LINK_BADAUTH ? "wrong password"
                             : ws == CYW43_LINK_FAIL ? "join failed"

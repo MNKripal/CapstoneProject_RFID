@@ -560,6 +560,9 @@ int main(void) {
 #ifndef WIFI_SSID_ALT
 #define WIFI_SSID_ALT ""
 #endif
+#ifdef STATIC_IP
+    net_set_static_ip(STATIC_IP, STATIC_MASK, STATIC_GW);
+#endif
     net_start(WIFI_SSID, WIFI_SSID_ALT, WIFI_PASSWORD);
 #else
     printf("WIFI,disabled (no wifi_config.h), USB serial only\n");
