@@ -16,21 +16,33 @@
 #endif
 
 /* ---------------------------------------------------------------------------
- * Wiring: this is the ONLY place pins are defined. Change them here to match
- * the physical connections between the Pico 2 W and the RC522 module.
+ * RFID Reader Wiring Configuration
  *
- *   RC522 pin   Pico GPIO
- *   SDA (NSS)   PIN_CS
-  *   MISO        PIN_MISO
- *   RST         PIN_RST
- *   3.3V        3V3 (NOT 5V)
- *   GND         GND
- *   SCK         PIN_SCK
- *   MOSI        PIN_MOSI
-
+ * Define the GPIO pins used to connect the MFRC522 RFID reader to the
+ * Raspberry Pi Pico 2 W. This is the ONLY place pins are defined; update
+ * these definitions to match the actual wiring.
  *
- * SCK/MOSI/MISO must be a valid pin set for the chosen SPI_PORT
- * (spi0: SCK 2/6/18, MOSI 3/7/19, MISO 4/16/20).
+ *   MFRC522 Pin       Pico 2 W Connection
+ *   -------------------------------------
+ *   SDA (NSS)         PIN_CS
+ *   SCK               PIN_SCK
+ *   MOSI              PIN_MOSI
+ *   MISO              PIN_MISO
+ *   RST               PIN_RST
+ *   3.3V              3V3 OUT, pin 36 (do NOT use 5V)
+ *   GND               GND
+ *
+ * Ensure that SCK, MOSI, and MISO use GPIO pins supported by the selected
+ * SPI interface.
+ *
+ * Valid SPI0 GPIO options:
+ *   SCK:   GPIO 2, 6, or 18
+ *   MOSI:  GPIO 3, 7, or 19
+ *   MISO:  GPIO 4, 16, or 20
+ *
+ * Current project wiring (matches the defines below and README.md):
+ *   SCK  = GPIO 2    MOSI = GPIO 3    MISO = GPIO 4
+ *   CS   = GPIO 5    RST  = GPIO 15
  * ------------------------------------------------------------------------- */
 #define SPI_PORT  spi0
 #define PIN_SCK   2
