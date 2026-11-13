@@ -51,11 +51,14 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import random
 import re
 import secrets
 import sqlite3
 import sys
+import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -68,7 +71,7 @@ DB_PATH = os.path.join(HERE, "scans.db")
 READERS_PATH = os.path.join(HERE, "readers.json")
 DEVICE_KEY_PATH = os.path.join(HERE, "device_key.txt")
 
-OFFLINE_AFTER_S = 120          # no heartbeat/scan for this long => reader offline
+OFFLINE_AFTER_S = 30           # no heartbeat/scan for this long => reader offline (heartbeats are every 10 s)
 REPEAT_WINDOW_MIN = 10         # repeated-denial window
 REPEAT_THRESHOLD = 3           # denials within the window that raise a critical alert
 SESSION_DAYS = 30
@@ -118,6 +121,44 @@ def check_password(password, stored):
     return hmac.compare_digest(hash_password(password, salt), stored)
 
 
+# --------------------------------------------------------------------------- live event bus
+# Every scan, heartbeat, alert and reader log line is published here and
+# streamed to browsers over Server-Sent Events (GET /api/events). The last
+# EVENT_HISTORY events are replayed to a client when it connects.
+EVENT_HISTORY = 300
+_events = deque(maxlen=EVENT_HISTORY)
+_subscribers = set()
+_bus_lock = threading.Lock()
+_event_seq = 0
+
+
+def publish(type_, reader_id=None, text="", **extra):
+    global _event_seq
+    with _bus_lock:
+        _event_seq += 1
+        ev = {"id": _event_seq, "ts": iso(utcnow()), "type": type_, "reader_id": reader_id, "text": text, **extra}
+        _events.append(ev)
+        for q in list(_subscribers):
+            try:
+                q.put_nowait(ev)
+            except queue.Full:
+                pass
+    return ev
+
+
+def subscribe():
+    q = queue.Queue(maxsize=500)
+    with _bus_lock:
+        _subscribers.add(q)
+        history = list(_events)
+    return q, history
+
+
+def unsubscribe(q):
+    with _bus_lock:
+        _subscribers.discard(q)
+
+
 # --------------------------------------------------------------------------- database
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans (
@@ -156,7 +197,8 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS reader_status (
     reader_id TEXT PRIMARY KEY,
-    last_seen TEXT NOT NULL
+    last_seen TEXT NOT NULL,
+    meta      TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -192,6 +234,9 @@ def open_db():
     tag_cols = [r["name"] for r in db.execute("PRAGMA table_info(tags)")]
     if "owner_id" not in tag_cols:
         db.execute("ALTER TABLE tags ADD COLUMN owner_id INTEGER")
+    rs_cols = [r["name"] for r in db.execute("PRAGMA table_info(reader_status)")]
+    if "meta" not in rs_cols:
+        db.execute("ALTER TABLE reader_status ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
     db.commit()
     return db
 
@@ -220,14 +265,19 @@ def public_user(row):
 def raise_alert(db, ts, type_, severity, message, reader_id=None, uid=None):
     db.execute("INSERT INTO alerts (ts, type, severity, reader_id, uid, message) VALUES (?,?,?,?,?,?)",
                (ts, type_, severity, reader_id, uid, message))
+    publish("alert", reader_id, message, severity=severity, alert_type=type_, uid=uid)
 
 
-def touch_reader(db, reader_id, ts):
+def touch_reader(db, reader_id, ts, meta=None):
     db.execute("INSERT INTO reader_status (reader_id, last_seen) VALUES (?, ?) "
                "ON CONFLICT(reader_id) DO UPDATE SET last_seen = excluded.last_seen "
                "WHERE excluded.last_seen > reader_status.last_seen", (reader_id, ts))
-    db.execute("UPDATE alerts SET acknowledged = 1 WHERE type = 'reader_offline' "
-               "AND reader_id = ? AND acknowledged = 0", (reader_id,))
+    if meta:
+        db.execute("UPDATE reader_status SET meta = ? WHERE reader_id = ?", (json.dumps(meta), reader_id))
+    cur = db.execute("UPDATE alerts SET acknowledged = 1 WHERE type = 'reader_offline' "
+                     "AND reader_id = ? AND acknowledged = 0", (reader_id,))
+    if cur.rowcount:
+        publish("reader", reader_id, f"{reader_id} is back online")
 
 
 def insert_scan(db, reader_id, uid, ts=None, readers=None, event_id=None):
@@ -270,7 +320,10 @@ def insert_scan(db, reader_id, uid, ts=None, readers=None, event_id=None):
             raise_alert(db, ts, "repeated_denied", "critical",
                         f"Tag {uid} denied {n} times in {REPEAT_WINDOW_MIN} minutes (last at {where})", reader_id, uid)
     db.commit()
-    return {**dict(db.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()), "duplicate": False}
+    row = {**dict(db.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()), "duplicate": False}
+    publish("scan", reader_id, f"{uid} {'AUTHORIZED' if authorized else 'DENIED (' + reason + ')'} at {where}",
+            uid=uid, authorized=bool(authorized), reason=reason, scan_id=scan_id)
+    return row
 
 
 def check_offline(db, readers):
@@ -316,8 +369,8 @@ def seed_demo(db):
     for i in range(3):
         insert_scan(db, "rack-02", "7E8F9A0B", iso(now - timedelta(minutes=4 - i)), readers)
     insert_scan(db, "rack-99", "A1B2C3D4", iso(now - timedelta(minutes=30)), readers)
-    for rid, age in (("rack-01", 5), ("rack-02", 12), ("rack-03", 20), ("rack-04", 3600)):
-        touch_reader(db, rid, iso(now - timedelta(seconds=age)))
+    for rid, age in [(rid, 5) for rid in readers]:
+        touch_reader(db, rid, iso(now - timedelta(seconds=age)), {"transport": "demo"})
     db.commit()
     print("Seeded demo users, tags, scans, heartbeats")
     print("Demo logins:  " + "   ".join(f"{u} / {p} ({r})" for u, p, _, r in DEMO_USERS))
@@ -417,6 +470,8 @@ class Handler(SimpleHTTPRequestHandler):
         ("POST",   r"^/api/scans$",                 "post_scan",        "device"),
         ("DELETE", r"^/api/scans$",                 "delete_scans",     "staff"),
         ("POST",   r"^/api/heartbeat$",             "post_heartbeat",   "device"),
+        ("POST",   r"^/api/log$",                   "post_log",         "device"),
+        ("GET",    r"^/api/events$",                "get_events",       "user"),
         ("GET",    r"^/api/readers$",               "get_readers",      "user"),
         ("GET",    r"^/api/tags$",                  "get_tags",         "user"),
         ("POST",   r"^/api/tags$",                  "post_tag",         "user"),
@@ -430,6 +485,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _dispatch(self, method):
         url = urlparse(self.path)
+        if url.path == "/api/events":
+            self.connection.settimeout(None)   # long-lived stream
         for m, pattern, name, access in self.ROUTES:
             if m != method:
                 continue
@@ -613,17 +670,58 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- readers
     def post_heartbeat(self, q):
-        reader_id = str(self._body()["reader_id"]).strip()
+        data = self._body()
+        reader_id = str(data["reader_id"]).strip()
+        meta = {k: data[k] for k in ("transport", "ip", "pending", "dropped", "recoveries", "uptime_s", "fw", "rssi")
+                if k in data}
+        meta["from"] = self.client_address[0]
         db = open_db()
-        touch_reader(db, reader_id, iso(utcnow()))
+        touch_reader(db, reader_id, iso(utcnow()), meta)
         db.commit(); db.close()
+        publish("heartbeat", reader_id,
+                f"heartbeat via {meta.get('transport', '?')}" + (f", pending {meta['pending']}" if meta.get("pending") else "")
+                + (f", {meta['recoveries']} recoveries" if meta.get("recoveries") else ""), **meta)
         self._json(200, {"ok": True, "known_reader": reader_id in load_readers()})
+
+    def post_log(self, q):
+        """Reader log lines (recoveries, antenna changes, Wi-Fi state...) for the Live tab."""
+        data = self._body()
+        reader_id = str(data.get("reader_id", "")).strip() or None
+        lines = data.get("lines") or ([data["line"]] if "line" in data else [])
+        for line in lines[:50]:
+            publish("log", reader_id, str(line)[:300], transport=data.get("transport"))
+        self._json(200, {"ok": True, "accepted": min(len(lines), 50)})
+
+    def get_events(self, q):
+        """Server-Sent Events stream of everything that happens, newest first replayed."""
+        q_, history = subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            for ev in history[-100:]:
+                self.wfile.write(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                try:
+                    ev = q_.get(timeout=15)
+                    self.wfile.write(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            unsubscribe(q_)
 
     def get_readers(self, q):
         readers = load_readers()
         db = open_db()
         check_offline(db, readers)
         status = {r["reader_id"]: r["last_seen"] for r in db.execute("SELECT * FROM reader_status")}
+        metas = {r["reader_id"]: json.loads(r["meta"] or "{}") for r in db.execute("SELECT * FROM reader_status")}
         day_start = iso(utcnow().replace(hour=0, minute=0, second=0))
         counts = {r["reader_id"]: (r["n"], r["denied"]) for r in db.execute(
             "SELECT reader_id, COUNT(*) AS n, SUM(authorized = 0) AS denied FROM scans WHERE ts >= ? GROUP BY reader_id",
@@ -636,7 +734,8 @@ class Handler(SimpleHTTPRequestHandler):
             online = bool(seen) and parse_ts(seen) >= cutoff
             n, denied = counts.get(r["id"], (0, 0))
             entry = {**r, "last_seen": seen, "online": online,
-                     "status": "online" if online else ("offline" if seen else "never seen")}
+                     "status": "online" if online else ("offline" if seen else "never seen"),
+                     "transport": metas.get(r["id"], {}).get("transport"), "meta": metas.get(r["id"], {})}
             if self.is_staff:
                 entry.update({"scans_today": n, "denied_today": denied or 0})
             out.append(entry)

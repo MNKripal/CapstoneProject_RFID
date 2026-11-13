@@ -132,6 +132,15 @@
   nav.top .navdot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   nav.top .navdot[hidden] { display: none; }
 
+  /* live log */
+  .log { background: #0e0e0d; color: #d6d5cc; border-radius: 8px; padding: 10px 12px; height: 520px; overflow-y: auto;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .log { background: #1a1a19; } }
+  .log .t { color: #8f8e86; } .log .r { color: #86b6ef; }
+  .log .scan { color: #7dd87d; } .log .scan.denied { color: #f08c8c; }
+  .log .heartbeat { color: #8f8e86; } .log .alert { color: #fab219; } .log .log { color: #d6d5cc; } .log .reader { color: #86b6ef; }
+  .log .recovery { color: #f08c8c; }
+
   /* alerts */
   .alert { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 12px 4px; border-bottom: 1px solid var(--border); }
   .alert:last-child { border-bottom: 0; }
@@ -157,6 +166,7 @@
   <a class="tab" href="#/alerts" data-tab="alerts">Alerts <span class="count" id="alert-count" hidden>0</span></a>
   <a class="tab" href="#/tags" data-tab="tags">Tags</a>
   <a class="tab" href="#/users" data-tab="users">Users</a>
+  <a class="tab" href="#/live" data-tab="live">Live <span class="navdot" id="live-dot" hidden></span></a>
   <span class="spacer"></span>
   <span class="live" id="live">connecting…</span>
   <span class="who" id="who" style="color:var(--text-secondary);font-size:13px;margin:0 8px 0 14px;white-space:nowrap"></span>
@@ -309,6 +319,19 @@
       <tbody id="user-rows"></tbody></table></div>
   </div>
 </section>
+
+<!-- ============================ LIVE ============================ -->
+<section data-view="live">
+  <div class="page-head">
+    <div><h1>Live</h1><div class="sub">Everything the readers and the server report, as it happens: scans, heartbeats, alerts and the reader's own log lines</div></div>
+    <div class="filters" style="margin:0">
+      <label><input type="checkbox" id="live-hb"> Show heartbeats</label>
+      <label><input type="checkbox" id="live-scroll" checked> Auto-scroll</label>
+      <button type="button" id="live-clear">Clear</button>
+    </div>
+  </div>
+  <div class="card"><div class="log" id="live-log"></div></div>
+</section>
 </main>
 
 <div class="tip" id="tip"></div>
@@ -369,7 +392,7 @@
   // ---------- routing ----------
   function route() {
     const v = (location.hash.replace('#/', '') || 'activity').split('?')[0];
-    view = ['activity', 'readers', 'alerts', 'tags', 'users'].includes(v) ? v : 'activity';
+    view = ['activity', 'readers', 'alerts', 'tags', 'users', 'live'].includes(v) ? v : 'activity';
     document.querySelectorAll('section[data-view]').forEach(s => s.classList.toggle('active', s.dataset.view === view));
     document.querySelectorAll('nav a.tab').forEach(a => a.classList.toggle('active', a.dataset.tab === view));
     renderView();
@@ -516,7 +539,7 @@
       <a class="chip ${r.status === 'offline' ? 'offline' : ''}" href="#/readers" title="${esc(r.id)} · last contact ${ago(r.last_seen)}">
         <span class="dot ${cls[r.status]} ${r.online ? 'pulse' : ''}"></span>
         <span>${esc(r.name)}</span>
-        <span class="st">${r.online ? 'online' : r.status === 'offline' ? `offline · ${ago(r.last_seen)}` : 'never seen'}</span>
+        <span class="st">${r.online ? `online${r.transport ? ' · ' + (r.transport === 'wifi' ? 'Wi-Fi' : r.transport.toUpperCase()) : ''}` : r.status === 'offline' ? `offline · ${ago(r.last_seen)}` : 'never seen'}</span>
       </a>`).join('');
     const down = readerList.filter(r => !r.online).length, dot = $('readers-dot');
     dot.hidden = readerList.length === 0;
@@ -537,7 +560,7 @@
     const cls = { online: 'good', offline: 'critical', 'never seen': 'muted' };
     $('reader-rows').innerHTML = readerList.map(r => `<tr>
       <td>${esc(r.id)}</td><td class="loc">${esc(r.name)}</td>
-      <td><span class="dot ${cls[r.status]}"></span>${r.status}</td>
+      <td><span class="dot ${cls[r.status]}"></span>${r.status}${r.online && r.transport ? ` <span class="dim" style="color:var(--text-muted)">via ${r.transport === 'wifi' ? 'Wi-Fi' : r.transport}</span>` : ''}</td>
       <td class="dim">${ago(r.last_seen)}</td><td>${r.scans_today}</td><td>${r.denied_today}</td></tr>`).join('');
     const online = readerList.filter(r => r.online).length;
     $('readers-sub').textContent = `· ${online} of ${readerList.length} online`;
@@ -669,12 +692,44 @@
     alerts = j.alerts;
     $('alert-count').textContent = j.open; $('alert-count').hidden = j.open === 0;
   }
+  // ---------- LIVE (Server-Sent Events) ----------
+  const liveLines = [];
+  let es = null;
+  function liveAppend(ev) {
+    liveLines.push(ev); if (liveLines.length > 500) liveLines.shift();
+    if (view === 'live') liveRender(true);
+  }
+  function liveRender(incremental) {
+    const box = $('live-log'), showHb = $('live-hb').checked;
+    const html = liveLines.filter(ev => showHb || ev.type !== 'heartbeat').map(ev => {
+      const t = new Date(ev.ts).toLocaleTimeString([], { hour12: false });
+      const cls = ev.type === 'scan' ? (ev.authorized ? 'scan' : 'scan denied') : ev.type === 'log' && /recovery|not responding|storm/i.test(ev.text) ? 'recovery' : ev.type;
+      return `<span class="t">${t}</span>  <span class="r">${esc(ev.reader_id || 'server').padEnd(8)}</span> <span class="${cls}">${esc(ev.text)}</span>`;
+    }).join('\n');
+    box.innerHTML = html || '<span class="t">waiting for events…</span>';
+    if ($('live-scroll').checked) box.scrollTop = box.scrollHeight;
+  }
+  function liveStart() {
+    if (es) return;
+    es = new EventSource('/api/events');
+    es.onopen = () => { $('live-dot').hidden = false; $('live-dot').style.background = 'var(--good)'; $('live-dot').title = 'live stream connected'; };
+    es.onerror = () => { $('live-dot').hidden = false; $('live-dot').style.background = 'var(--critical)'; $('live-dot').title = 'live stream disconnected, retrying'; };
+    es.onmessage = (m) => {
+      const ev = JSON.parse(m.data); liveAppend(ev);
+      // anything that changes the dashboard: refresh right away instead of waiting for the next poll
+      if (ev.type === 'scan' || ev.type === 'alert' || ev.type === 'reader') poll();
+    };
+  }
+  ['live-hb', 'live-scroll'].forEach(id => $(id).addEventListener('change', () => liveRender()));
+  $('live-clear').addEventListener('click', () => { liveLines.length = 0; liveRender(); });
+
   function renderView() {
     if (view === 'activity') renderActivity();
     else if (view === 'readers') renderReaders();
     else if (view === 'alerts') renderAlerts();
     else if (view === 'tags') renderTags();
     else if (view === 'users') renderUsers();
+    else if (view === 'live') liveRender();
   }
   let sig = '';
   async function poll() {
@@ -696,7 +751,7 @@
     me = m.user;
     if (me.role !== 'staff') { location.replace('me.html'); throw new Error('login required'); }
     $('who').textContent = `${me.display_name} (staff)`;
-  }).then(loadReaders).then(loadUsers).then(refreshTags).then(() => { route(); return poll(); }).then(() => setInterval(poll, POLL_MS))
+  }).then(loadReaders).then(loadUsers).then(refreshTags).then(() => { route(); liveStart(); return poll(); }).then(() => setInterval(poll, POLL_MS))
     .catch(e => { if (e.message === 'login required') return; banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
 })();
 </script>

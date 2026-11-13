@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
@@ -79,7 +80,8 @@
 #define MAX_CARDS_PER_POLL    8
 // Heartbeat interval. The dashboard marks a reader offline when it stops
 // hearing these (see dashboard/server.py OFFLINE_AFTER_S).
-#define HEARTBEAT_MS          30000
+#define HEARTBEAT_MS          10000
+#define FIRMWARE_VERSION      "0.4.0"
 // Scans are kept in memory until the host acknowledges them (ACK,<seq>) and
 // are re-sent at this interval, so a disconnected laptop or a server restart
 // does not lose a read. PENDING_MAX bounds the memory; oldest is dropped first.
@@ -172,6 +174,23 @@ static pending_scan_t *pending_oldest(void) {
     return best < 0 ? NULL : &pending[best];
 }
 
+/* ---------------------------------------------------------------------------
+ * Reader log lines for the dashboard's Live tab. Important lines (recoveries,
+ * antenna changes, Wi-Fi state) are printed on serial as before AND queued
+ * here; over Wi-Fi the queue is flushed to POST /api/log between scan uploads.
+ * ------------------------------------------------------------------------- */
+#define LOGQ_MAX 12
+#define LOGQ_LINE 96
+static char logq[LOGQ_MAX][LOGQ_LINE];
+static uint8_t logq_n = 0;
+
+static void rlog(const char *fmt, ...) {
+    char line[LOGQ_LINE];
+    va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof(line), fmt, ap); va_end(ap);
+    printf("%s\n", line);
+    if (logq_n < LOGQ_MAX) { strncpy(logq[logq_n], line, LOGQ_LINE - 1); logq[logq_n][LOGQ_LINE - 1] = 0; logq_n++; }
+}
+
 #ifdef WIFI_ENABLED
 /* ---------------------------------------------------------------------------
  * Wi-Fi upload: the server's reply is the acknowledgement, and its verdict
@@ -215,11 +234,39 @@ static bool net_send_oldest_scan(void) {
 }
 
 static void net_send_heartbeat(void) {
-    char json[160];
-    snprintf(json, sizeof(json), "{\"reader_id\":\"%s\",\"pending\":%lu,\"dropped\":%lu,\"recoveries\":%lu,\"uptime_s\":%lu}",
-             READER_ID, (unsigned long)pending_count(), (unsigned long)dropped_scans,
+    char json[220];
+    snprintf(json, sizeof(json),
+             "{\"reader_id\":\"%s\",\"transport\":\"wifi\",\"ip\":\"%s\",\"fw\":\"%s\",\"pending\":%lu,\"dropped\":%lu,\"recoveries\":%lu,\"uptime_s\":%lu}",
+             READER_ID, net_ip(), FIRMWARE_VERSION, (unsigned long)pending_count(), (unsigned long)dropped_scans,
              (unsigned long)net_recoveries_ref, (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000));
     net_post(SERVER_HOST, SERVER_PORT, "/api/heartbeat", DEVICE_KEY, json, on_hb_posted, NULL);
+}
+
+static void on_log_posted(int status, const char *body, void *user) {
+    (void)body; (void)user;
+    if (status == 200) logq_n = 0;            // delivered: drop the queue
+}
+
+// JSON-escape a log line into out (quotes and backslashes only; lines are ASCII)
+static void json_escape(const char *in, char *out, size_t n) {
+    size_t o = 0;
+    for (; *in && o + 2 < n; in++) {
+        if (*in == '"' || *in == '\\') out[o++] = '\\';
+        out[o++] = *in;
+    }
+    out[o] = 0;
+}
+
+static bool net_send_logs(void) {
+    if (logq_n == 0) return false;
+    static char json[LOGQ_MAX * (LOGQ_LINE * 2) + 96];
+    int n = snprintf(json, sizeof(json), "{\"reader_id\":\"%s\",\"transport\":\"wifi\",\"lines\":[", READER_ID);
+    for (uint8_t i = 0; i < logq_n && n < (int)sizeof(json) - LOGQ_LINE * 2 - 8; i++) {
+        char esc[LOGQ_LINE * 2]; json_escape(logq[i], esc, sizeof(esc));
+        n += snprintf(json + n, sizeof(json) - n, "%s\"%s\"", i ? "," : "", esc);
+    }
+    snprintf(json + n, sizeof(json) - n, "]}");
+    return net_post(SERVER_HOST, SERVER_PORT, "/api/log", DEVICE_KEY, json, on_log_posted, NULL);
 }
 #endif
 
@@ -507,6 +554,7 @@ int main(void) {
     init_reader_blocking(mfrc);
     boot_id = get_rand_32();
     printf("BOOT,%s,%08lX,pending=0\n", READER_ID, (unsigned long)boot_id);
+    rlog("BOOT,%s,%08lX,fw=%s", READER_ID, (unsigned long)boot_id, FIRMWARE_VERSION);
 #ifdef WIFI_ENABLED
     printf("WIFI,enabled,server=%s:%d\n", SERVER_HOST, SERVER_PORT);
 #ifndef WIFI_SSID_ALT
@@ -565,6 +613,8 @@ int main(void) {
                 net_send_heartbeat();
             } else if (time_reached(next_net_send) && net_send_oldest_scan()) {
                 next_net_send = make_timeout_time_ms(NET_SEND_GAP_MS);
+            } else if (pending_count() == 0 && net_send_logs()) {
+                next_net_send = make_timeout_time_ms(NET_SEND_GAP_MS);
             }
         }
 #endif
@@ -580,7 +630,7 @@ int main(void) {
         if (PCD_GetTxMask() == ANTENNA_TX_REDUCED && time_reached(reduced_until)) {
             PCD_SetTxMask(ANTENNA_TX_FULL);
             PCD_AntennaOn(mfrc);
-            printf("ANTENNA,%s,full drive restored\n", READER_ID);
+            rlog("ANTENNA,%s,full drive restored", READER_ID);
         }
         if (time_reached(storm_window_end)) { storm_window_end = make_timeout_time_ms(STORM_WINDOW_MS); storm_count = 0; }
 
@@ -589,20 +639,20 @@ int main(void) {
             if (++storm_count >= STORM_RESETS && PCD_GetTxMask() == ANTENNA_TX_FULL) {
                 PCD_SetTxMask(ANTENNA_TX_REDUCED);
                 reduced_until = make_timeout_time_ms(REDUCED_DRIVE_MS);
-                printf("ANTENNA,%s,reset storm: reduced to TX1 only for %d s (check 3.3V/GND to the module)\n",
-                       READER_ID, REDUCED_DRIVE_MS / 1000);
+                rlog("ANTENNA,%s,reset storm: reduced to TX1 only for %d s (check 3.3V/GND to the module)",
+                     READER_ID, REDUCED_DRIVE_MS / 1000);
             }
             if (PCD_IsResponding(mfrc)) {
                 // Chip is alive, only its registers were reset: soft re-configure
                 // (a few ms) instead of a full hardware reset (~250 ms).
                 PCD_Configure(mfrc);
                 if (PCD_IsHealthy(mfrc)) {
-                    printf("RC522 lost its configuration (recovery #%lu), re-configured\n", (unsigned long)recoveries);
+                    rlog("RC522 lost its configuration (recovery #%lu), re-configured", (unsigned long)recoveries);
                     consecutive_failures = 0;
                     continue;
                 }
             }
-            printf("RC522 not responding (recovery #%lu), full re-init...\n", (unsigned long)recoveries);
+            rlog("RC522 not responding (recovery #%lu), full re-init...", (unsigned long)recoveries);
             init_reader_blocking(mfrc);
             consecutive_failures = 0;
             continue;
@@ -623,7 +673,7 @@ int main(void) {
                 PCD_StopCrypto1(mfrc);
                 if (consecutive_failures >= 5) {
                     // Something is wedged in the reader; a full re-init clears it.
-                    printf("Too many failed reads, re-initializing RC522...\n");
+                    rlog("Too many failed reads, re-initializing RC522...");
                     init_reader_blocking(mfrc);
                     consecutive_failures = 0;
                 }

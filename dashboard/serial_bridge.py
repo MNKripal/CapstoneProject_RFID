@@ -66,7 +66,12 @@ def handle_line(line, server, ser, stored):
     parts = line.split(",")
     kind = parts[0]
     if kind == "HB" and len(parts) >= 2:
-        r = post(server, "/api/heartbeat", {"reader_id": parts[1].strip()})
+        hb = {"reader_id": parts[1].strip(), "transport": "usb"}
+        for p_ in parts[2:]:                      # pending=<n>,dropped=<n>
+            if "=" in p_:
+                k, v = p_.split("=", 1)
+                if v.strip().isdigit(): hb[k.strip()] = int(v)
+        r = post(server, "/api/heartbeat", hb)
         if not r.get("known_reader"):
             print(f"  ! reader '{parts[1].strip()}' is not in readers.json")
         extra = [p for p in parts[2:] if not p.startswith("pending=0") and not p.startswith("dropped=0")]
@@ -97,8 +102,12 @@ def handle_line(line, server, ser, stored):
             ser.write(f"ACK,{seq}\n".encode())
     elif kind == "BOOT":
         print(f"  reader {parts[1] if len(parts) > 1 else '?'} is up (boot {parts[2] if len(parts) > 2 else '?'}, {parts[3] if len(parts) > 3 else ''})")
+        post(server, "/api/log", {"reader_id": parts[1] if len(parts) > 1 else None, "transport": "usb", "line": line})
     elif kind == "WARN":
         print(f"  ! reader warning: {','.join(parts[2:])}")
+        post(server, "/api/log", {"reader_id": parts[1] if len(parts) > 1 else None, "transport": "usb", "line": line})
+    elif kind in ("LOG",):
+        post(server, "/api/log", {"reader_id": None, "transport": "usb", "line": line})
     else:
         print("  ! malformed line ignored")
 
@@ -141,6 +150,13 @@ def main():
                     if line.startswith(("SCAN,", "HB,", "BOOT,", "WARN,")):
                         try:
                             handle_line(line, args.server, ser, stored)
+                        except urllib.error.HTTPError as e:
+                            print(f"  ! server rejected it: {e.code} {e.read().decode(errors='replace')[:120]}")
+                        except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
+                            print(f"  ! could not forward to server: {e}  (the reader will re-send it)")
+                    elif line.startswith(("RC522 ", "ANTENNA,", "WIFI,", "Too many")):
+                        try:
+                            post(args.server, "/api/log", {"reader_id": None, "transport": "usb", "line": line})
                         except urllib.error.HTTPError as e:
                             print(f"  ! server rejected it: {e.code} {e.read().decode(errors='replace')[:120]}")
                         except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
