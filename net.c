@@ -9,10 +9,11 @@
 #define REQ_MAX   1024
 #define RESP_MAX  1024
 #define REQ_TIMEOUT_MS   6000
-#define RECONNECT_MS     10000
+#define RECONNECT_MS     20000
 
 static struct {
-    const char *ssid, *password;
+    const char *ssid, *ssid_alt, *password;
+    bool use_alt;
     bool initialised, connecting;
     absolute_time_t next_attempt;
     char ip[16];
@@ -28,8 +29,8 @@ static struct {
 } R;
 
 /* ---------------------------------------------------------------- Wi-Fi link */
-void net_start(const char *ssid, const char *password) {
-    W.ssid = ssid; W.password = password;
+void net_start(const char *ssid, const char *ssid_alt, const char *password) {
+    W.ssid = ssid; W.ssid_alt = (ssid_alt && ssid_alt[0]) ? ssid_alt : NULL; W.password = password;
     if (cyw43_arch_init()) { printf("WIFI,init failed\n"); return; }
     cyw43_arch_enable_sta_mode();
     cyw43_wifi_pm(&cyw43_state, CYW43_PERFORMANCE_PM);
@@ -39,10 +40,11 @@ void net_start(const char *ssid, const char *password) {
 }
 
 static void try_connect(void) {
-    int rc = cyw43_arch_wifi_connect_async(W.ssid, W.password, CYW43_AUTH_WPA2_AES_PSK);
+    const char *ssid = (W.use_alt && W.ssid_alt) ? W.ssid_alt : W.ssid;
+    int rc = cyw43_arch_wifi_connect_async(ssid, W.password, CYW43_AUTH_WPA2_AES_PSK);
     W.connecting = (rc == 0);
     W.next_attempt = make_timeout_time_ms(RECONNECT_MS);
-    printf("WIFI,connecting to %s%s\n", W.ssid, rc ? " (start failed)" : "");
+    printf("WIFI,connecting to \"%s\"%s%s\n", ssid, W.use_alt ? " (alternate spelling)" : "", rc ? " (start failed)" : "");
 }
 
 bool net_connected(void) {
@@ -142,7 +144,19 @@ void net_poll(void) {
         }
     } else {
         if (strcmp(W.ip, "-") != 0) { printf("WIFI,disconnected\n"); strcpy(W.ip, "-"); }
-        if (time_reached(W.next_attempt)) try_connect();
+        if (time_reached(W.next_attempt)) {
+            // Say why the last attempt did not get a link before trying again.
+            int ws = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+            const char *why = ws == CYW43_LINK_NONET ? "network not found (2.4 GHz on? name exact?)"
+                            : ws == CYW43_LINK_BADAUTH ? "wrong password"
+                            : ws == CYW43_LINK_FAIL ? "join failed"
+                            : ws == CYW43_LINK_JOIN ? "joined, waiting for IP (DHCP)"
+                            : ws == CYW43_LINK_NOIP ? "joined, no IP yet"
+                            : ws == CYW43_LINK_DOWN ? "link down" : "status unknown";
+            printf("WIFI,last attempt: %s (%d)\n", why, ws);
+            if (ws == CYW43_LINK_NONET && W.ssid_alt) W.use_alt = !W.use_alt;   // try the other spelling
+            try_connect();
+        }
     }
 
     // request completion / timeout

@@ -8,7 +8,7 @@
 // status: HTTP status code, or 0 if the request failed (no connection, timeout).
 typedef void (*net_cb_t)(int status, const char *body, void *user);
 
-void net_start(const char *ssid, const char *password);   // begins connecting; returns at once
+void net_start(const char *ssid, const char *ssid_alt, const char *password);   // begins connecting; returns at once. ssid_alt (may be NULL/"") is tried when ssid is not found
 void net_poll(void);                                        // drive reconnects, timeouts, callbacks
 bool net_connected(void);                                   // link up and we have an IP
 const char *net_ip(void);                                   // dotted IP or "-"

@@ -509,7 +509,10 @@ int main(void) {
     printf("BOOT,%s,%08lX,pending=0\n", READER_ID, (unsigned long)boot_id);
 #ifdef WIFI_ENABLED
     printf("WIFI,enabled,server=%s:%d\n", SERVER_HOST, SERVER_PORT);
-    net_start(WIFI_SSID, WIFI_PASSWORD);
+#ifndef WIFI_SSID_ALT
+#define WIFI_SSID_ALT ""
+#endif
+    net_start(WIFI_SSID, WIFI_SSID_ALT, WIFI_PASSWORD);
 #else
     printf("WIFI,disabled (no wifi_config.h), USB serial only\n");
 #endif
