@@ -26,6 +26,7 @@ Endpoints
     POST   /api/auth/logout
     POST   /api/auth/register          {"username", "password", "display_name"}  (student)
     GET    /api/auth/me
+    POST   /api/auth/password          {"current_password", "new_password"}  change my own password
     GET    /api/push                   notifications: enabled?, VAPID public key, my subscriptions
     POST   /api/push/subscribe         {"subscription": <PushSubscription JSON>}
     DELETE /api/push/subscribe         {"endpoint"}
@@ -607,6 +608,7 @@ class Handler(SimpleHTTPRequestHandler):
         ("POST",   r"^/api/auth/register$",         "register",         "public"),
         ("POST",   r"^/api/auth/logout$",           "logout",           "user"),
         ("GET",    r"^/api/auth/me$",               "me",               "user"),
+        ("POST",   r"^/api/auth/password$",         "change_password",  "user"),
         ("GET",    r"^/api/push$",                  "get_push",         "user"),
         ("POST",   r"^/api/push/subscribe$",        "push_subscribe",   "user"),
         ("DELETE", r"^/api/push/subscribe$",        "push_unsubscribe", "user"),
@@ -889,6 +891,24 @@ class Handler(SimpleHTTPRequestHandler):
                 entry.update({"scans_today": n, "denied_today": denied or 0})
             out.append(entry)
         self._json(200, {"readers": out, "offline_after_s": OFFLINE_AFTER_S})
+
+    def change_password(self, q):
+        """Anyone changes their own password; the current one is required and other devices are signed out."""
+        data = self._body()
+        current, new = str(data.get("current_password", "")), str(data.get("new_password", ""))
+        if len(new) < 6:
+            return self._json(400, {"error": "new password must be at least 6 characters"})
+        db = open_db()
+        row = db.execute("SELECT password_hash FROM users WHERE id = ?", (self.user["id"],)).fetchone()
+        if not check_password(current, row["password_hash"]):
+            db.close()
+            return self._json(401, {"error": "current password is wrong"})
+        token = SimpleCookie(self.headers.get("Cookie", ""))["session"].value
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new), self.user["id"]))
+        db.execute("DELETE FROM sessions WHERE user_id = ? AND token != ?", (self.user["id"], token))
+        db.commit(); db.close()
+        print(f"password changed: {self.user['username']}")
+        self._json(200, {"ok": True})
 
     # ---- notifications
     def get_push(self, q):

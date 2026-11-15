@@ -62,6 +62,15 @@
     </div>
   </div>
   <div class="card">
+    <h2>Account <span id="acct-who"></span></h2>
+    <form class="add" id="pw-form" autocomplete="off">
+      <label class="field">Current password<input type="password" id="pw-cur" required autocomplete="current-password"></label>
+      <label class="field">New password (6+ characters)<input type="password" id="pw-new" required minlength="6" autocomplete="new-password"></label>
+      <button type="submit">Change password</button>
+    </form>
+    <div id="pw-msg"></div>
+  </div>
+  <div class="card">
     <h2>Add a bike</h2>
     <form class="add" id="add-form">
       <label class="field">Tag UID (printed on the serial monitor, or ask staff)<input type="text" id="f-uid" class="mono" placeholder="DE AD BE EF" required></label>
@@ -262,6 +271,14 @@
   $('notify-off').addEventListener('click', () => act(async () => { await pushDisable(); renderNotify(); }, 'Turning off notifications'));
   $('notify-test').addEventListener('click', () => act(async () => { await api('/api/push/test', { method: 'POST' }); $('notify-hint').textContent = 'Test sent. It should appear in a few seconds.'; }, 'Sending a test'));
 
+  $('pw-form').addEventListener('submit', async (e) => {
+    e.preventDefault(); const m = $('pw-msg'); m.className = ''; m.textContent = '';
+    try {
+      await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ current_password: $('pw-cur').value, new_password: $('pw-new').value }) });
+      m.className = 'msg-ok'; m.textContent = 'Password changed. Other devices you were signed in on have been signed out.'; $('pw-form').reset();
+    } catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
+  });
+
   // ---------- MY ACTIVITY ----------
   function rangeStart() {
     const now = new Date();
@@ -345,7 +362,7 @@
   async function init() {
     const m = await api('/api/auth/me'); me = m.user;
     if (me.role === 'staff') { location.replace('index.html'); return; }
-    $('who').textContent = me.display_name;
+    $('who').textContent = me.display_name; $('acct-who').textContent = `· signed in as ${me.username}`;
     const r = await api('/api/readers'); readerList = r.readers; readers = Object.fromEntries(readerList.map(x => [x.id, x]));
     await refresh(); route();
     pushInit().then(renderNotify).catch(renderNotify);

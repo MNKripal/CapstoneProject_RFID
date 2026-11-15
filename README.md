@@ -138,7 +138,7 @@ the dashboard within a few seconds.
 | :--- | :--- |
 | Anonymous | Sign in, create a student account |
 | Reader (device key) | Post scans and heartbeats |
-| Student | See their own tags, taps and alerts; add, rename, report lost/found, remove their own tags |
+| Student | See their own tags, taps and alerts; add, rename, report lost/found, remove their own tags; change their own password |
 | Staff | Everything, including all scans, alerts, the tag registry, owners and user accounts |
 
 Passwords are stored as salted PBKDF2 hashes. Sessions are HttpOnly cookies that
@@ -245,6 +245,7 @@ need the `X-Device-Key` header instead. Students get their own data only.
 | `POST` | `/api/auth/register` | Create a student account |
 | `POST` | `/api/auth/logout` | End the session |
 | `GET` | `/api/auth/me` | Who am I |
+| `POST` | `/api/auth/password` | Change my own password `{"current_password", "new_password"}` |
 | `GET` | `/api/push` | Are notifications enabled, the public key, my subscribed devices |
 | `POST` / `DELETE` | `/api/push/subscribe` | Register / remove this browser's push subscription |
 | `POST` | `/api/push/test` | Send a test notification to my devices |
