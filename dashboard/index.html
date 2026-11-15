@@ -666,9 +666,16 @@
       <td class="mono">${esc(u.username)}</td><td>${esc(u.display_name)}</td>
       <td>${u.role === 'staff' ? '<span class="badge good">staff</span>' : '<span class="badge muted">student</span>'}</td>
       <td>${u.tags}</td><td class="dim">${fmtDate(u.created_at)}</td>
-      <td class="actions">${u.id === me.id ? '<span class="dim" style="color:var(--text-muted)">you</span>' :
+      <td class="actions"><button class="small" data-pw="${u.id}">Reset password</button>${u.id === me.id ? '<span class="dim" style="color:var(--text-muted)">you</span>' :
         `<button class="small" data-role="${u.id}" data-to="${u.role === 'staff' ? 'student' : 'staff'}">Make ${u.role === 'staff' ? 'student' : 'staff'}</button><button class="small danger" data-udel="${u.id}">Delete</button>`}</td></tr>`).join('');
     $('users-sub').textContent = `· ${users.length}`;
+    $('user-rows').querySelectorAll('[data-pw]').forEach(b => b.addEventListener('click', () => act(async () => {
+      const u = users.find(x => x.id === +b.dataset.pw);
+      const pw = prompt(`New password for ${u.username} (at least 6 characters). They will need it next time they sign in.`);
+      if (pw === null) return;
+      await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify({ password: pw }) });
+      alert(`Password for ${u.username} changed.`);
+    }, 'Resetting the password')));
     $('user-rows').querySelectorAll('[data-role]').forEach(b => b.addEventListener('click', () => act(async () => {
       await api(`/api/users/${b.dataset.role}`, { method: 'PUT', body: JSON.stringify({ role: b.dataset.to }) }); await loadUsers(); renderUsers();
     }, 'Changing the role')));
