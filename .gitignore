@@ -4,3 +4,4 @@ dashboard/device_key.txt
 wifi_config.h
 __pycache__/
 .DS_Store
+dashboard/vapid_private.pem

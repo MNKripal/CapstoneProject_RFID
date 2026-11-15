@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RFID Scan Log</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2a78d6">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Scan Log">
 <style>
   :root {
     color-scheme: light;
@@ -139,7 +145,8 @@
   .log .t { color: #8f8e86; } .log .r { color: #86b6ef; }
   .log .scan { color: #7dd87d; } .log .scan.denied { color: #f08c8c; }
   .log .heartbeat { color: #8f8e86; } .log .alert { color: #fab219; } .log .log { color: #d6d5cc; } .log .reader { color: #86b6ef; }
-  .log .recovery { color: #f08c8c; }
+  .log .recovery { color: #f08c8c; } .log .notify { color: #c9a4f0; }
+  #notify-btn.on { border-color: var(--good); color: var(--good); }
 
   /* alerts */
   .alert { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 12px 4px; border-bottom: 1px solid var(--border); }
@@ -170,6 +177,7 @@
   <span class="spacer"></span>
   <span class="live" id="live">connecting…</span>
   <span class="who" id="who" style="color:var(--text-secondary);font-size:13px;margin:0 8px 0 14px;white-space:nowrap"></span>
+  <button type="button" class="small" id="notify-btn" hidden title="Get serious and critical alerts as notifications on this device" style="margin-right:6px">Alerts: off</button>
   <button type="button" class="small" id="logout">Log out</button>
 </nav>
 
@@ -677,6 +685,52 @@
       msg.className = 'msg-ok'; msg.textContent = `Created ${r.user.role} account ${r.user.username}.`; $('user-form').reset(); await loadUsers(); renderUsers();
     } catch (err) { msg.className = 'msg-err'; msg.textContent = err.message; }
   });
+
+  // ---------- push notifications ----------
+  // The server signs messages with a VAPID key; the browser's push service wakes sw.js even when the
+  // page is closed. Needs HTTPS (or localhost); on iPhone the site must be added to the Home Screen first.
+  const PUSH = { reg: null, sub: null, info: null, supported: 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window };
+  const b64ToU8 = (s) => { const b = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  function pushBlocker() {
+    if (!window.isSecureContext) return 'Open this page over HTTPS (the tunnel link) to turn on notifications.';
+    if (isIOS && !isStandalone) return 'On iPhone: tap Share, then "Add to Home Screen", and open Scan Log from the home screen to turn on notifications.';
+    if (!PUSH.supported) return 'This browser does not support web notifications.';
+    if (PUSH.info && !PUSH.info.enabled) return 'Notifications are not enabled on the server (' + (PUSH.info.hint || 'pywebpush missing') + ').';
+    if (Notification.permission === 'denied') return 'Notifications are blocked for this site in the browser settings.';
+    return null;
+  }
+  async function pushInit() {
+    PUSH.info = await api('/api/push').catch(() => ({ enabled: false }));
+    if (PUSH.supported && window.isSecureContext) {
+      try { PUSH.reg = await navigator.serviceWorker.register('sw.js'); PUSH.sub = await PUSH.reg.pushManager.getSubscription(); } catch (e) { console.warn('service worker', e); }
+    }
+  }
+  async function pushEnable() {
+    if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') throw new Error('permission was not granted');
+    PUSH.reg = PUSH.reg || await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const sub = await PUSH.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(PUSH.info.public_key) });
+    await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), user_agent: navigator.userAgent }) });
+    PUSH.sub = sub; PUSH.info = await api('/api/push');
+  }
+  async function pushDisable() {
+    if (PUSH.sub) { await api('/api/push/subscribe', { method: 'DELETE', body: JSON.stringify({ endpoint: PUSH.sub.endpoint }) }).catch(() => {}); await PUSH.sub.unsubscribe().catch(() => {}); PUSH.sub = null; }
+    PUSH.info = await api('/api/push');
+  }
+  function renderNotifyBtn() {
+    const b = $('notify-btn'), blocker = pushBlocker(), on = !!PUSH.sub;
+    b.hidden = !!blocker && !on; b.classList.toggle('on', on);
+    b.textContent = on ? 'Alerts: on' : 'Alerts: off';
+    b.title = blocker || (on ? 'This device gets serious and critical alerts as notifications. Click to turn off.' : 'Get serious and critical alerts as notifications on this device');
+  }
+  $('notify-btn').addEventListener('click', async () => {
+    try { if (PUSH.sub) await pushDisable(); else { await pushEnable(); await api('/api/push/test', { method: 'POST' }); } }
+    catch (e) { alert(`Notifications: ${e.message}`); }
+    renderNotifyBtn();
+  });
+  pushInit().then(renderNotifyBtn).catch(renderNotifyBtn);
   $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.replace('login.html'); });
 
   // ---------- data loading ----------

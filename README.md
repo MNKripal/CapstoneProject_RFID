@@ -29,7 +29,11 @@ the location of the reader that saw it. No GPS is needed.
   - **My activity**: every tap of their tags, with location and result.
   - **My map**: where each of their bikes was last seen.
 - Login with username and password; students can create their own account.
-- Works on a laptop or a phone, in light or dark mode.
+- Notifications on your phone or laptop when your bike is scanned, and for staff when
+  a serious alert fires. Each student picks per bike: every tap, only when the bike
+  turns up at a different rack, only while reported lost, or never.
+- Works on a laptop or a phone, in light or dark mode, and can be added to a phone's
+  home screen like an app.
 
 ## Hardware
 
@@ -64,6 +68,8 @@ Power the module from 3.3 V only. If the serial output says
   CMake, Ninja and the ARM toolchain for you).
 - Python 3.9 or newer for the dashboard.
 - `pyserial` for the USB bridge: `python3 -m pip install pyserial`
+- `pywebpush` if you want notifications: `python3 -m pip install pywebpush`
+- `cloudflared` if you want a public HTTPS link: `brew install cloudflared`
 
 ## Getting started
 
@@ -138,6 +144,35 @@ the dashboard within a few seconds.
 Passwords are stored as salted PBKDF2 hashes. Sessions are HttpOnly cookies that
 last 30 days. The server never serves the database, the device key or its own code.
 
+## Notifications and a public link (optional)
+
+The portal can notify a student's phone or laptop the moment their bike is scanned,
+even when the site is closed, using the browser's built-in Web Push. No app is needed.
+
+1. Install the one extra package on the laptop that runs the server:
+   `python3 -m pip install pywebpush`. The server creates a signing key,
+   `dashboard/vapid_private.pem`, on its next start (git ignores it).
+2. Browsers only allow notifications on HTTPS pages, so give the dashboard a public
+   HTTPS address with a free Cloudflare tunnel. In a second terminal:
+
+   ```
+   cd dashboard
+   ./tunnel.sh
+   ```
+
+   It prints a link like `https://random-words.trycloudflare.com`. Anyone with the
+   link reaches the sign-in page; the link is new each time the script starts and
+   works only while it is running. The Pico keeps posting to the laptop over the
+   local network, so the tunnel is only for browsers.
+3. Open the link on your phone, sign in, go to **My bikes** and press **Turn on** in
+   the Notifications card. On iPhone first use Share, then Add to Home Screen, and
+   open the app from there. Staff press **Alerts: off** in the top bar of the
+   dashboard to receive serious and critical alerts.
+
+Under each bike the student chooses when to be told: every tap, only when the bike
+turns up at a different rack than last time, only while it is reported lost, or never.
+A tap on a lost bike always notifies its owner and the staff.
+
 ## Wi-Fi mode (optional)
 
 The reader can post scans and heartbeats to the server directly over Wi-Fi, with no
@@ -189,8 +224,12 @@ dashboard/
   index.html           Staff dashboard (HTML, CSS, JavaScript, Leaflet map)
   me.html              Student portal: My bikes, My activity, My map
   portal.css           Shared styles for login.html and me.html
+  sw.js                Service worker that shows push notifications and opens the portal
+  manifest.json        Lets phones add the portal to the home screen (icons are the PNGs)
+  tunnel.sh            Starts a free Cloudflare tunnel so phones can reach the server over HTTPS
   readers.json         Reader ID -> name, latitude, longitude
   serial_bridge.py     Forwards serial output from the Pico to the server
+  serial_watch.py      Timestamped serial viewer for bench testing
 docs/
   wireframes.html      Wireframes of the four dashboard views (wireframes.png is rendered)
 ```
@@ -206,6 +245,9 @@ need the `X-Device-Key` header instead. Students get their own data only.
 | `POST` | `/api/auth/register` | Create a student account |
 | `POST` | `/api/auth/logout` | End the session |
 | `GET` | `/api/auth/me` | Who am I |
+| `GET` | `/api/push` | Are notifications enabled, the public key, my subscribed devices |
+| `POST` / `DELETE` | `/api/push/subscribe` | Register / remove this browser's push subscription |
+| `POST` | `/api/push/test` | Send a test notification to my devices |
 | `GET` / `POST` | `/api/users` | Staff: list / create accounts |
 | `PUT` / `DELETE` | `/api/users/<id>` | Staff: change role, name or password / delete |
 | `POST` | `/api/scans` | Reader: log a scan `{"reader_id": "rack-01", "uid": "DEADBEEF"}` |
@@ -213,7 +255,7 @@ need the `X-Device-Key` header instead. Students get their own data only.
 | `POST` | `/api/heartbeat` | Reader: I am alive `{"reader_id": "rack-01"}` |
 | `GET` | `/api/readers` | Readers with location, online status and today's counts |
 | `GET` / `POST` | `/api/tags` | List tags / register one (students own what they register; staff may set `owner_id`) |
-| `PUT` / `DELETE` | `/api/tags/<uid>` | Update `label`, `authorized` (staff also `owner_id`) / remove |
+| `PUT` / `DELETE` | `/api/tags/<uid>` | Update `label`, `authorized`, `notify` (staff also `owner_id`) / remove |
 | `GET` | `/api/tags/unregistered` | UIDs seen by readers but not registered |
 | `GET` | `/api/alerts` | Open alerts (`?include_acked=1` for all) |
 | `POST` | `/api/alerts/<id>/ack` | Acknowledge one alert |

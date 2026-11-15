@@ -86,10 +86,30 @@ UTC, for example `2026-10-14T06:14:43+00:00`.
 | `owner` | TEXT | no | Display name of the owner. Kept in sync with the user's display name. |
 | `authorized` | INTEGER (0/1) | yes | 1 means the tag unlocks. 0 means revoked, or reported lost by the student. |
 | `notes` | TEXT | no | Free text for staff. |
+| `notify` | TEXT | yes | When to notify the owner: `all` (every scan, the default), `moves` (only when the tag turns up at a different reader than its previous scan), `lost` (only while `authorized = 0`), `off`. A scan of a tag with `authorized = 0` notifies the owner under every setting except `off`. |
 | `created_at` | TEXT | yes | When the tag was registered. |
 
 Status is derived: `authorized = 1` shows as Authorized / Active, `authorized = 0`
 shows as Revoked / Reported lost.
+
+### push_subscription (table `push_subscriptions`)
+
+One row per browser that turned notifications on. The browser creates the
+subscription with the server's public VAPID key and hands it to
+`POST /api/push/subscribe`; the server keeps the private key in
+`dashboard/vapid_private.pem`, outside git. A row is deleted when the push
+service answers 404 or 410, which means the browser dropped the subscription.
+
+| Field | Type | Required | Notes |
+| :--- | :--- | :--- | :--- |
+| `id` | INTEGER, primary key | yes | |
+| `user_id` | INTEGER | yes | `users.id` the device belongs to. A student receives scans of their own tags; staff receive serious and critical alerts. |
+| `endpoint` | TEXT, unique | yes | The push service URL for this browser. Re-subscribing the same browser updates the row. |
+| `p256dh` | TEXT | yes | The browser's public key, base64url. |
+| `auth` | TEXT | yes | The browser's auth secret, base64url. |
+| `user_agent` | TEXT | no | First 200 characters of the browser's user agent, for the "which devices" list. |
+| `created_at` | TEXT | yes | |
+| `last_sent` | TEXT | no | Last time a notification was pushed to this row. |
 
 ### user (table `users`)
 

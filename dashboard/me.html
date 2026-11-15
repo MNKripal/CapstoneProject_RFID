@@ -6,7 +6,20 @@
 <title>My bikes · RFID Scan Log</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="portal.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2a78d6">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Scan Log">
 <style>
+  .notify { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .notify .state { display: inline-flex; align-items: center; gap: 6px; }
+  .notify .state i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); display: inline-block; }
+  .notify .state.on i { background: var(--good); }
+  .notify .hint { flex-basis: 100%; color: var(--text-secondary); font-size: 12px; }
+  .bike label.pref { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+  .bike label.pref select { padding: 3px 6px; font-size: 12px; }
   svg.chart { width: 100%; height: 160px; display: block; overflow: visible; }
   svg.chart text { fill: var(--text-secondary); font-size: 11px; }
   svg.chart .grid line { stroke: var(--grid); } svg.chart .axis line { stroke: var(--border); }
@@ -39,6 +52,16 @@
   <div class="bikes" id="bikes"></div>
   <div class="empty" id="bikes-empty" hidden>No bikes yet. Tap your tag on any rack reader, then add it below.</div>
   <div class="card" style="margin-top:16px">
+    <h2>Notifications <span>on this phone or computer</span></h2>
+    <div class="notify" id="notify">
+      <span class="state" id="notify-state"><i></i><span>checking…</span></span>
+      <button type="button" class="small primary" id="notify-on" hidden>Turn on</button>
+      <button type="button" class="small" id="notify-off" hidden>Turn off</button>
+      <button type="button" class="small" id="notify-test" hidden>Send a test</button>
+      <span class="hint" id="notify-hint">You get a notification when one of your bikes is scanned, even if this site is closed. Choose per bike below when to be told.</span>
+    </div>
+  </div>
+  <div class="card">
     <h2>Add a bike</h2>
     <form class="add" id="add-form">
       <label class="field">Tag UID (printed on the serial monitor, or ask staff)<input type="text" id="f-uid" class="mono" placeholder="DE AD BE EF" required></label>
@@ -152,6 +175,12 @@
           ${t.authorized ? '<span class="badge good">✓ Active</span>' : '<span class="badge critical">⊘ Reported lost</span>'}</div>
         <div class="uid mono">${spacedUid(t.uid)}</div>
         <div class="meta">${last ? `Last seen ${ago(last.ts)} at ${esc(where(last.reader_id))}` : 'Not seen by a reader yet'} · ${t.scans} tap${t.scans === 1 ? '' : 's'}</div>
+        <label class="pref">Notify me<select data-notify="${t.uid}">
+          <option value="all"${t.notify === 'all' ? ' selected' : ''}>on every tap</option>
+          <option value="moves"${t.notify === 'moves' ? ' selected' : ''}>only when it turns up at a different rack</option>
+          <option value="lost"${t.notify === 'lost' ? ' selected' : ''}>only while reported lost</option>
+          <option value="off"${t.notify === 'off' ? ' selected' : ''}>never</option>
+        </select></label>
         <div class="act">
           <button class="small" data-toggle="${t.uid}" data-auth="${t.authorized ? 0 : 1}">${t.authorized ? 'Report lost' : 'Found it'}</button>
           <button class="small" data-rename="${t.uid}">Rename</button>
@@ -170,6 +199,10 @@
       if (label === null) return;
       await api(`/api/tags/${t.uid}`, { method: 'PUT', body: JSON.stringify({ label }) }); await refresh();
     }, 'Renaming')));
+    $('bikes').querySelectorAll('[data-notify]').forEach(sel => sel.addEventListener('change', () => act(async () => {
+      await api(`/api/tags/${sel.dataset.notify}`, { method: 'PUT', body: JSON.stringify({ notify: sel.value }) });
+      const t = tagByUid(sel.dataset.notify); if (t) t.notify = sel.value;
+    }, 'Saving the notification setting')));
     $('bikes').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => act(async () => {
       if (!confirm('Remove this tag from your account? It will no longer unlock anything.')) return;
       await api(`/api/tags/${b.dataset.del}`, { method: 'DELETE' }); await refresh();
@@ -181,6 +214,53 @@
       m.className = 'msg-ok'; m.textContent = `Added ${spacedUid(r.uid)} to your bikes.`; $('add-form').reset(); await refresh();
     }, 'Adding the bike').then(() => { if ($('banner').hidden === false) { m.className = 'msg-err'; m.textContent = $('banner').textContent; banner(''); } });
   });
+
+
+  // ---------- push notifications ----------
+  // The server signs messages with a VAPID key; the browser's push service wakes sw.js even when the
+  // page is closed. Needs HTTPS (or localhost); on iPhone the site must be added to the Home Screen first.
+  const PUSH = { reg: null, sub: null, info: null, supported: 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window };
+  const b64ToU8 = (s) => { const b = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  function pushBlocker() {
+    if (!window.isSecureContext) return 'Open this page over HTTPS (the tunnel link) to turn on notifications.';
+    if (isIOS && !isStandalone) return 'On iPhone: tap Share, then "Add to Home Screen", and open Scan Log from the home screen to turn on notifications.';
+    if (!PUSH.supported) return 'This browser does not support web notifications.';
+    if (PUSH.info && !PUSH.info.enabled) return 'Notifications are not enabled on the server (' + (PUSH.info.hint || 'pywebpush missing') + ').';
+    if (Notification.permission === 'denied') return 'Notifications are blocked for this site in the browser settings.';
+    return null;
+  }
+  async function pushInit() {
+    PUSH.info = await api('/api/push').catch(() => ({ enabled: false }));
+    if (PUSH.supported && window.isSecureContext) {
+      try { PUSH.reg = await navigator.serviceWorker.register('sw.js'); PUSH.sub = await PUSH.reg.pushManager.getSubscription(); } catch (e) { console.warn('service worker', e); }
+    }
+  }
+  async function pushEnable() {
+    if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') throw new Error('permission was not granted');
+    PUSH.reg = PUSH.reg || await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const sub = await PUSH.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(PUSH.info.public_key) });
+    await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), user_agent: navigator.userAgent }) });
+    PUSH.sub = sub; PUSH.info = await api('/api/push');
+  }
+  async function pushDisable() {
+    if (PUSH.sub) { await api('/api/push/subscribe', { method: 'DELETE', body: JSON.stringify({ endpoint: PUSH.sub.endpoint }) }).catch(() => {}); await PUSH.sub.unsubscribe().catch(() => {}); PUSH.sub = null; }
+    PUSH.info = await api('/api/push');
+  }
+  function renderNotify() {
+    const blocker = pushBlocker(), on = !!PUSH.sub, others = PUSH.info ? PUSH.info.subscriptions.filter(s => !PUSH.sub || s.endpoint !== PUSH.sub.endpoint).length : 0;
+    const st = $('notify-state'); st.className = 'state' + (on ? ' on' : '');
+    st.lastElementChild.textContent = on ? 'On for this device' : blocker ? 'Not available here' : 'Off on this device';
+    $('notify-on').hidden = on || !!blocker; $('notify-off').hidden = !on; $('notify-test').hidden = !on;
+    $('notify-hint').textContent = blocker || (on
+      ? `This device is notified when your bikes are scanned${others ? `, and so ${others === 1 ? 'is 1 other device' : `are ${others} other devices`}` : ''}. Choose per bike below when to be told.`
+      : `You get a notification when one of your bikes is scanned, even if this site is closed${others ? ` (already on for ${others} other device${others === 1 ? '' : 's'})` : ''}.`);
+  }
+  $('notify-on').addEventListener('click', () => act(async () => { await pushEnable(); renderNotify(); }, 'Turning on notifications'));
+  $('notify-off').addEventListener('click', () => act(async () => { await pushDisable(); renderNotify(); }, 'Turning off notifications'));
+  $('notify-test').addEventListener('click', () => act(async () => { await api('/api/push/test', { method: 'POST' }); $('notify-hint').textContent = 'Test sent. It should appear in a few seconds.'; }, 'Sending a test'));
 
   // ---------- MY ACTIVITY ----------
   function rangeStart() {
@@ -268,6 +348,7 @@
     $('who').textContent = me.display_name;
     const r = await api('/api/readers'); readerList = r.readers; readers = Object.fromEntries(readerList.map(x => [x.id, x]));
     await refresh(); route();
+    pushInit().then(renderNotify).catch(renderNotify);
     setInterval(() => refresh().catch(() => {}), POLL_MS);
   }
   $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.replace('login.html'); });

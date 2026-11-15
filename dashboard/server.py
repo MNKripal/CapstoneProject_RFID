@@ -2,7 +2,7 @@
 """
 RFID scan log server: staff dashboard, student portal and device API.
 
-Standard library only (no pip installs). Run:
+Standard library only, plus the optional pywebpush package for phone notifications. Run:
 
     python3 server.py                     # http://localhost:8080
     python3 server.py --demo              # also seeds demo users, tags, scans, alerts
@@ -26,6 +26,10 @@ Endpoints
     POST   /api/auth/logout
     POST   /api/auth/register          {"username", "password", "display_name"}  (student)
     GET    /api/auth/me
+    GET    /api/push                   notifications: enabled?, VAPID public key, my subscriptions
+    POST   /api/push/subscribe         {"subscription": <PushSubscription JSON>}
+    DELETE /api/push/subscribe         {"endpoint"}
+    POST   /api/push/test              send a test notification to my devices
     GET    /api/users                  staff
     POST   /api/users                  staff  {"username","password","display_name","role"}
     PUT    /api/users/<id>             staff  {"role" | "display_name" | "password"}
@@ -45,6 +49,7 @@ Endpoints
     POST   /api/alerts/ack_all         staff
 """
 import argparse
+import base64
 import functools
 import getpass
 import hashlib
@@ -64,12 +69,22 @@ from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
+try:   # optional: phone/desktop notifications over Web Push (python3 -m pip install pywebpush)
+    from pywebpush import webpush, WebPushException
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    PUSH_AVAILABLE = True
+except ImportError:
+    PUSH_AVAILABLE = False
+
 print = functools.partial(print, flush=True)  # show log lines immediately even when piped
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "scans.db")
 READERS_PATH = os.path.join(HERE, "readers.json")
 DEVICE_KEY_PATH = os.path.join(HERE, "device_key.txt")
+VAPID_KEY_PATH = os.path.join(HERE, "vapid_private.pem")   # Web Push signing key, created on first run, git-ignored
+VAPID_CONTACT = "mailto:rfid-dashboard@example.edu"         # contact the push services may use to reach the operator
 
 OFFLINE_AFTER_S = 30           # no heartbeat/scan for this long => reader offline (heartbeats are every 10 s)
 REPEAT_WINDOW_MIN = 10         # repeated-denial window
@@ -216,6 +231,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    endpoint   TEXT NOT NULL UNIQUE,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_sent  TEXT
+);
 """
 
 
@@ -234,6 +260,8 @@ def open_db():
     tag_cols = [r["name"] for r in db.execute("PRAGMA table_info(tags)")]
     if "owner_id" not in tag_cols:
         db.execute("ALTER TABLE tags ADD COLUMN owner_id INTEGER")
+    if "notify" not in tag_cols:   # when to notify the owner: all | moves | lost | off
+        db.execute("ALTER TABLE tags ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
     rs_cols = [r["name"] for r in db.execute("PRAGMA table_info(reader_status)")]
     if "meta" not in rs_cols:
         db.execute("ALTER TABLE reader_status ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
@@ -266,6 +294,9 @@ def raise_alert(db, ts, type_, severity, message, reader_id=None, uid=None):
     db.execute("INSERT INTO alerts (ts, type, severity, reader_id, uid, message) VALUES (?,?,?,?,?,?)",
                (ts, type_, severity, reader_id, uid, message))
     publish("alert", reader_id, message, severity=severity, alert_type=type_, uid=uid)
+    if severity in ("serious", "critical"):
+        notify(role="staff", title={"serious": "Alert", "critical": "Critical alert"}[severity], body=message,
+               url="/index.html#/alerts", tag=f"alert-{type_}")
 
 
 def touch_reader(db, reader_id, ts, meta=None):
@@ -278,6 +309,111 @@ def touch_reader(db, reader_id, ts, meta=None):
                      "AND reader_id = ? AND acknowledged = 0", (reader_id,))
     if cur.rowcount:
         publish("reader", reader_id, f"{reader_id} is back online")
+
+
+# --------------------------------------------------------------------------- notifications (Web Push)
+# Students and staff can let the portal send notifications to their phone or
+# laptop. The browser hands us a push subscription; we sign messages with a
+# VAPID key and the browser vendor's push service wakes the service worker
+# (sw.js), even when the site is closed. Needs HTTPS in the browser (localhost
+# or the Cloudflare tunnel, see tunnel.sh) and the pywebpush package here.
+NOTIFY_CHOICES = ("all", "moves", "lost", "off")
+_notify_q = queue.Queue()
+
+
+def vapid_private_pem():
+    if not os.path.exists(VAPID_KEY_PATH):
+        key = ec.generate_private_key(ec.SECP256R1())
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption())
+        with open(VAPID_KEY_PATH, "wb") as f:
+            f.write(pem)
+        os.chmod(VAPID_KEY_PATH, 0o600)
+    with open(VAPID_KEY_PATH, "rb") as f:
+        return f.read()
+
+
+def vapid_public_key():
+    """Base64url (no padding) of the uncompressed P-256 point, the form PushManager.subscribe() wants."""
+    key = serialization.load_pem_private_key(vapid_private_pem(), password=None)
+    raw = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def notify(user_ids=None, role=None, title="", body="", url="/me.html", tag="rfid"):
+    """Queue a notification for specific users, or for every user with the given role."""
+    if PUSH_AVAILABLE:
+        _notify_q.put({"user_ids": list(user_ids or []), "role": role, "title": title, "body": body, "url": url, "tag": tag})
+
+
+def _notify_worker():
+    while True:
+        job = _notify_q.get()
+        try:
+            _send_notification(job)
+        except Exception as e:   # a failed notification must never take the server down
+            print(f"notify: {type(e).__name__}: {e}")
+
+
+def _send_notification(job):
+    db = open_db()
+    if job["role"]:
+        subs = db.execute("SELECT s.*, u.display_name FROM push_subscriptions s JOIN users u ON u.id = s.user_id "
+                          "WHERE u.role = ?", (job["role"],)).fetchall()
+    elif job["user_ids"]:
+        marks = ",".join("?" * len(job["user_ids"]))
+        subs = db.execute(f"SELECT s.*, u.display_name FROM push_subscriptions s JOIN users u ON u.id = s.user_id "
+                          f"WHERE s.user_id IN ({marks})", job["user_ids"]).fetchall()
+    else:
+        subs = []
+    payload = json.dumps({"title": job["title"], "body": job["body"], "url": job["url"], "tag": job["tag"]})
+    sent, gone = 0, 0
+    for sub in subs:
+        info = {"endpoint": sub["endpoint"], "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}}
+        try:
+            webpush(info, payload, vapid_private_key=VAPID_KEY_PATH,
+                    vapid_claims={"sub": VAPID_CONTACT}, ttl=120)
+            db.execute("UPDATE push_subscriptions SET last_sent = ? WHERE id = ?", (iso(utcnow()), sub["id"]))
+            sent += 1
+        except WebPushException as e:
+            status = getattr(e.response, "status_code", None)
+            if status in (404, 410):   # the browser dropped this subscription; forget it
+                db.execute("DELETE FROM push_subscriptions WHERE id = ?", (sub["id"],))
+                gone += 1
+            else:
+                print(f"notify: push to {sub['display_name']} failed: {e}")
+        except Exception as e:   # network trouble reaching the push service; try the next device
+            print(f"notify: push to {sub['display_name']} failed: {type(e).__name__}: {e}")
+    db.commit(); db.close()
+    if sent or gone:
+        who = job["role"] + " accounts" if job["role"] else ", ".join(sorted({s["display_name"] for s in subs}))
+        publish("notify", None, f"Notified {who}: {job['title']} ({sent} device{'s' if sent != 1 else ''})")
+
+
+def notify_owner_of_scan(db, tag, reader_id, where, ts, authorized):
+    """Decide whether this scan should ping the tag's owner, per the tag's notify setting."""
+    if not tag or not tag["owner_id"]:
+        return
+    pref = tag["notify"] if "notify" in tag.keys() else "all"
+    name = tag["label"] or f"tag {tag['uid']}"
+    when = parse_ts(ts).astimezone().strftime("%-I:%M %p")
+    if not authorized:   # reported lost (revoked) and someone just tapped it
+        if pref != "off":
+            notify([tag["owner_id"]], title="Your lost bike was just scanned",
+                   body=f"{name} was tapped at {where} at {when}. Staff have been alerted.",
+                   url="/me.html#/activity", tag=f"lost-{tag['uid']}")
+        return
+    if pref == "all":
+        send = True
+    elif pref == "moves":
+        prev = db.execute("SELECT reader_id FROM scans WHERE uid = ? AND ts < ? ORDER BY ts DESC, id DESC LIMIT 1",
+                          (tag["uid"], ts)).fetchone()
+        send = prev is None or prev["reader_id"] != reader_id
+    else:   # lost, off
+        send = False
+    if send:
+        notify([tag["owner_id"]], title="Your bike was seen",
+               body=f"{name} at {where}, {when}", url="/me.html#/activity", tag=f"seen-{tag['uid']}")
 
 
 def insert_scan(db, reader_id, uid, ts=None, readers=None, event_id=None):
@@ -323,6 +459,7 @@ def insert_scan(db, reader_id, uid, ts=None, readers=None, event_id=None):
     row = {**dict(db.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()), "duplicate": False}
     publish("scan", reader_id, f"{uid} {'AUTHORIZED' if authorized else 'DENIED (' + reason + ')'} at {where}",
             uid=uid, authorized=bool(authorized), reason=reason, scan_id=scan_id)
+    notify_owner_of_scan(db, tag, reader_id, where, ts, authorized)
     return row
 
 
@@ -470,6 +607,10 @@ class Handler(SimpleHTTPRequestHandler):
         ("POST",   r"^/api/auth/register$",         "register",         "public"),
         ("POST",   r"^/api/auth/logout$",           "logout",           "user"),
         ("GET",    r"^/api/auth/me$",               "me",               "user"),
+        ("GET",    r"^/api/push$",                  "get_push",         "user"),
+        ("POST",   r"^/api/push/subscribe$",        "push_subscribe",   "user"),
+        ("DELETE", r"^/api/push/subscribe$",        "push_unsubscribe", "user"),
+        ("POST",   r"^/api/push/test$",             "push_test",        "user"),
         ("GET",    r"^/api/users$",                 "get_users",        "staff"),
         ("POST",   r"^/api/users$",                 "post_user",        "staff"),
         ("PUT",    r"^/api/users/(\d+)$",           "put_user",         "staff"),
@@ -518,7 +659,7 @@ class Handler(SimpleHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/":
                 self.path = "/login.html"
-            elif path.endswith((".db", ".txt", ".py", ".pyc")):   # never serve the database, key or code
+            elif path.endswith((".db", ".txt", ".py", ".pyc", ".pem", ".sh")):   # never serve the database, keys or code
                 return self._json(404, {"error": "not found"})
             super().do_GET()
 
@@ -749,6 +890,52 @@ class Handler(SimpleHTTPRequestHandler):
             out.append(entry)
         self._json(200, {"readers": out, "offline_after_s": OFFLINE_AFTER_S})
 
+    # ---- notifications
+    def get_push(self, q):
+        db = open_db()
+        mine = db.execute("SELECT endpoint, user_agent, created_at, last_sent FROM push_subscriptions WHERE user_id = ? "
+                          "ORDER BY created_at", (self.user["id"],)).fetchall()
+        db.close()
+        self._json(200, {"enabled": PUSH_AVAILABLE, "public_key": vapid_public_key() if PUSH_AVAILABLE else None,
+                         "subscriptions": [dict(r) for r in mine],
+                         "hint": None if PUSH_AVAILABLE else "install pywebpush on the server: python3 -m pip install pywebpush"})
+
+    def push_subscribe(self, q):
+        if not PUSH_AVAILABLE:
+            return self._json(503, {"error": "notifications are not enabled on this server (pip install pywebpush)"})
+        data = self._body()
+        sub = data["subscription"]
+        endpoint, keys = str(sub["endpoint"]), sub["keys"]
+        if not endpoint.startswith("https://"):
+            return self._json(400, {"error": "bad subscription"})
+        db = open_db()
+        db.execute("INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at) VALUES (?,?,?,?,?,?) "
+                   "ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, "
+                   "auth = excluded.auth, user_agent = excluded.user_agent",
+                   (self.user["id"], endpoint, str(keys["p256dh"]), str(keys["auth"]),
+                    str(data.get("user_agent", ""))[:200], iso(utcnow())))
+        db.commit()
+        n = db.execute("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (self.user["id"],)).fetchone()[0]
+        db.close()
+        print(f"push: {self.user['username']} subscribed a device ({n} total)")
+        self._json(201, {"ok": True, "subscriptions": n})
+
+    def push_unsubscribe(self, q):
+        data = self._body()
+        db = open_db()
+        cur = db.execute("DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
+                         (self.user["id"], str(data.get("endpoint", ""))))
+        db.commit(); db.close()
+        self._json(200, {"removed": cur.rowcount})
+
+    def push_test(self, q):
+        if not PUSH_AVAILABLE:
+            return self._json(503, {"error": "notifications are not enabled on this server"})
+        notify([self.user["id"]], title="Notifications are on",
+               body=f"Hi {self.user['display_name']}, this device will be told when your bikes are scanned.",
+               url="/me.html" if self.user["role"] != "staff" else "/index.html#/alerts", tag="test")
+        self._json(200, {"queued": True})
+
     # ---- tags
     def get_tags(self, q):
         where, params = self._owner_filter(q)
@@ -811,6 +998,10 @@ class Handler(SimpleHTTPRequestHandler):
                     fields.append(f"{k} = ?"); values.append(str(data[k]).strip())
             if "authorized" in data:
                 fields.append("authorized = ?"); values.append(1 if data["authorized"] else 0)
+            if "notify" in data:
+                if data["notify"] not in NOTIFY_CHOICES:
+                    return self._json(400, {"error": f"notify must be one of {', '.join(NOTIFY_CHOICES)}"})
+                fields.append("notify = ?"); values.append(data["notify"])
             if self.is_staff and "owner_id" in data:
                 owner_id, owner = self._resolve_owner(db, data)
                 fields += ["owner_id = ?", "owner = ?"]; values += [owner_id, owner]
@@ -911,6 +1102,12 @@ def main():
     print(f"Scans DB:   {DB_PATH}")
     print(f"Device key: {DEVICE_KEY_PATH}  (readers / serial_bridge.py send it as X-Device-Key)")
     device_key()
+    if PUSH_AVAILABLE:
+        vapid_private_pem()
+        threading.Thread(target=_notify_worker, daemon=True, name="notify").start()
+        print("Push notifications: enabled (browsers need HTTPS or localhost; run tunnel.sh for a public HTTPS link)")
+    else:
+        print("Push notifications: off (python3 -m pip install pywebpush to enable)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
