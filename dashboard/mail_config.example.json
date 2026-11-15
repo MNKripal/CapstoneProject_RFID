@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to mail_config.json (git ignores it). Gmail: turn on 2-step verification, create an App Password, use it here.",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "username": "yourname@gmail.com",
+  "password": "xxxx xxxx xxxx xxxx",
+  "from_addr": "yourname@gmail.com",
+  "from_name": "RFID Scan Log"
+}

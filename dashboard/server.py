@@ -27,6 +27,9 @@ Endpoints
     POST   /api/auth/register          {"username", "password", "display_name"}  (student)
     GET    /api/auth/me
     POST   /api/auth/password          {"current_password", "new_password"}  change my own password
+    PUT    /api/auth/email             {"email"}                               set my own email
+    POST   /api/auth/forgot            {"username"}            email a 6-digit reset code (public)
+    POST   /api/auth/reset             {"username", "code", "new_password"}     (public)
     GET    /api/push                   notifications: enabled?, VAPID public key, my subscriptions
     POST   /api/push/subscribe         {"subscription": <PushSubscription JSON>}
     DELETE /api/push/subscribe         {"endpoint"}
@@ -61,11 +64,13 @@ import queue
 import random
 import re
 import secrets
+import smtplib
 import sqlite3
 import sys
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -84,6 +89,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "scans.db")
 READERS_PATH = os.path.join(HERE, "readers.json")
 DEVICE_KEY_PATH = os.path.join(HERE, "device_key.txt")
+MAIL_CONFIG_PATH = os.path.join(HERE, "mail_config.json")   # SMTP settings for password-reset codes, git-ignored
+RESET_CODE_MINUTES = 10        # a password-reset code is valid for this long
+RESET_MAX_ATTEMPTS = 5         # wrong guesses before the code is thrown away
+RESET_RESEND_S = 60            # minimum gap between two codes for the same account
 VAPID_KEY_PATH = os.path.join(HERE, "vapid_private.pem")   # Web Push signing key, created on first run, git-ignored
 VAPID_CONTACT = "mailto:rfid-dashboard@example.edu"         # contact the push services may use to reach the operator
 
@@ -223,7 +232,18 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     display_name  TEXT NOT NULL DEFAULT '',
     role          TEXT NOT NULL DEFAULT 'student',
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    email         TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    code_hash  TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    used       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -263,6 +283,9 @@ def open_db():
         db.execute("ALTER TABLE tags ADD COLUMN owner_id INTEGER")
     if "notify" not in tag_cols:   # when to notify the owner: all | moves | lost | off
         db.execute("ALTER TABLE tags ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
+    user_cols = [r["name"] for r in db.execute("PRAGMA table_info(users)")]
+    if "email" not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
     rs_cols = [r["name"] for r in db.execute("PRAGMA table_info(reader_status)")]
     if "meta" not in rs_cols:
         db.execute("ALTER TABLE reader_status ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
@@ -270,8 +293,15 @@ def open_db():
     return db
 
 
-def create_user(db, username, password, display_name="", role="student"):
+def valid_email(s):
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s))
+
+
+def create_user(db, username, password, display_name="", role="student", email=""):
     username = username.strip().lower()
+    email = (email or "").strip().lower()
+    if email and not valid_email(email):
+        raise ValueError("that does not look like an email address")
     if not re.match(r"^[a-z0-9._@+-]{2,64}$", username):
         raise ValueError("username may contain letters, digits and . _ @ + - (2-64 chars)")
     if len(password) < 6:
@@ -280,15 +310,53 @@ def create_user(db, username, password, display_name="", role="student"):
         raise ValueError("role must be staff or student")
     if db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         raise ValueError(f"username '{username}' is taken")
-    cur = db.execute("INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?,?,?,?,?)",
-                     (username, hash_password(password), display_name.strip() or username, role, iso(utcnow())))
+    cur = db.execute("INSERT INTO users (username, password_hash, display_name, role, created_at, email) VALUES (?,?,?,?,?,?)",
+                     (username, hash_password(password), display_name.strip() or username, role, iso(utcnow()), email))
     db.commit()
     return cur.lastrowid
 
 
 def public_user(row):
     return {"id": row["id"], "username": row["username"], "display_name": row["display_name"],
-            "role": row["role"], "created_at": row["created_at"]}
+            "role": row["role"], "created_at": row["created_at"], "email": row["email"] if "email" in row.keys() else ""}
+
+
+def mask_email(e):
+    """k***l@gmail.com, enough for the owner to recognise it and nobody else to copy it."""
+    if "@" not in e:
+        return ""
+    name, dom = e.split("@", 1)
+    return (name[0] + "***" + (name[-1] if len(name) > 1 else "")) + "@" + dom
+
+
+# --------------------------------------------------------------------------- email (password-reset codes)
+# Settings live in dashboard/mail_config.json (see mail_config.example.json). Without it,
+# codes are printed on the server console so the flow can still be tried on the bench.
+def mail_config():
+    if not os.path.exists(MAIL_CONFIG_PATH):
+        return None
+    with open(MAIL_CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def send_mail(to, subject, body):
+    cfg = mail_config()
+    if not cfg:
+        print(f"MAIL not configured ({MAIL_CONFIG_PATH} missing). Would send to {to}: {subject} / {body.strip().splitlines()[0]}")
+        return False
+    msg = EmailMessage()
+    msg["From"] = f"{cfg.get('from_name', 'RFID Scan Log')} <{cfg.get('from_addr', cfg['username'])}>"
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    port = int(cfg.get("smtp_port", 587))
+    if port == 465:
+        with smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=15) as s:
+            s.login(cfg["username"], cfg["password"]); s.send_message(msg)
+    else:
+        with smtplib.SMTP(cfg["smtp_host"], port, timeout=15) as s:
+            s.starttls(); s.login(cfg["username"], cfg["password"]); s.send_message(msg)
+    return True
 
 
 def raise_alert(db, ts, type_, severity, message, reader_id=None, uid=None):
@@ -609,6 +677,9 @@ class Handler(SimpleHTTPRequestHandler):
         ("POST",   r"^/api/auth/logout$",           "logout",           "user"),
         ("GET",    r"^/api/auth/me$",               "me",               "user"),
         ("POST",   r"^/api/auth/password$",         "change_password",  "user"),
+        ("PUT",    r"^/api/auth/email$",            "set_email",        "user"),
+        ("POST",   r"^/api/auth/forgot$",           "forgot_password",  "public"),
+        ("POST",   r"^/api/auth/reset$",            "reset_password",   "public"),
         ("GET",    r"^/api/push$",                  "get_push",         "user"),
         ("POST",   r"^/api/push/subscribe$",        "push_subscribe",   "user"),
         ("DELETE", r"^/api/push/subscribe$",        "push_unsubscribe", "user"),
@@ -698,7 +769,8 @@ class Handler(SimpleHTTPRequestHandler):
         data = self._body()
         db = open_db()
         try:
-            uid = create_user(db, str(data["username"]), str(data["password"]), str(data.get("display_name", "")), "student")
+            uid = create_user(db, str(data["username"]), str(data["password"]), str(data.get("display_name", "")), "student",
+                              str(data.get("email", "")))
         except ValueError as e:
             db.close()
             return self._json(400, {"error": str(e)})
@@ -731,7 +803,7 @@ class Handler(SimpleHTTPRequestHandler):
         db = open_db()
         try:
             uid = create_user(db, str(data["username"]), str(data["password"]),
-                              str(data.get("display_name", "")), str(data.get("role", "student")))
+                              str(data.get("display_name", "")), str(data.get("role", "student")), str(data.get("email", "")))
         except ValueError as e:
             db.close()
             return self._json(400, {"error": str(e)})
@@ -744,6 +816,11 @@ class Handler(SimpleHTTPRequestHandler):
         fields, values = [], []
         if "display_name" in data:
             fields.append("display_name = ?"); values.append(str(data["display_name"]).strip())
+        if "email" in data:
+            email = str(data["email"]).strip().lower()
+            if email and not valid_email(email):
+                return self._json(400, {"error": "that does not look like an email address"})
+            fields.append("email = ?"); values.append(email)
         if "role" in data:
             if data["role"] not in ("staff", "student"):
                 return self._json(400, {"error": "role must be staff or student"})
@@ -908,6 +985,77 @@ class Handler(SimpleHTTPRequestHandler):
         db.execute("DELETE FROM sessions WHERE user_id = ? AND token != ?", (self.user["id"], token))
         db.commit(); db.close()
         print(f"password changed: {self.user['username']}")
+        self._json(200, {"ok": True})
+
+    def set_email(self, q):
+        email = str(self._body().get("email", "")).strip().lower()
+        if email and not valid_email(email):
+            return self._json(400, {"error": "that does not look like an email address"})
+        db = open_db()
+        db.execute("UPDATE users SET email = ? WHERE id = ?", (email, self.user["id"]))
+        db.commit(); db.close()
+        self._json(200, {"email": email})
+
+    def forgot_password(self, q):
+        """Step 1 of a self-service reset: email a one-time code to the address on the account."""
+        username = str(self._body().get("username", "")).strip().lower()
+        db = open_db()
+        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if not user:
+            db.close()
+            return self._json(404, {"error": "no account with that username"})
+        if not user["email"]:
+            db.close()
+            return self._json(400, {"error": "this account has no email on file; ask staff to reset the password"})
+        recent = db.execute("SELECT created_at FROM password_resets WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                            (user["id"],)).fetchone()
+        if recent and (utcnow() - parse_ts(recent["created_at"])).total_seconds() < RESET_RESEND_S:
+            db.close()
+            return self._json(429, {"error": f"a code was sent less than {RESET_RESEND_S} seconds ago; check your inbox"})
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        db.execute("UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0", (user["id"],))
+        db.execute("INSERT INTO password_resets (user_id, code_hash, created_at, expires_at) VALUES (?,?,?,?)",
+                   (user["id"], hash_password(code), iso(utcnow()), iso(utcnow() + timedelta(minutes=RESET_CODE_MINUTES))))
+        db.commit(); db.close()
+        body = (f"Hi {user['display_name']},\n\nYour RFID Scan Log password reset code is:\n\n    {code}\n\n"
+                f"It works for {RESET_CODE_MINUTES} minutes. If you did not ask for this, you can ignore this email; "
+                f"your password has not changed.\n")
+        try:
+            sent = send_mail(user["email"], "Your password reset code", body)
+        except Exception as e:
+            print(f"mail: sending to {mask_email(user['email'])} failed: {type(e).__name__}: {e}")
+            return self._json(502, {"error": "could not send the email; ask staff to reset the password"})
+        if not sent:
+            print(f"RESET CODE for {username}: {code}   (mail is not configured, see mail_config.example.json)")
+        print(f"password reset code {'emailed' if sent else 'printed'} for {username}")
+        self._json(200, {"sent": sent, "email": mask_email(user["email"]), "minutes": RESET_CODE_MINUTES,
+                         "note": None if sent else "email is not configured on this server; the code was printed on the server console"})
+
+    def reset_password(self, q):
+        """Step 2: the code from the email plus the new password."""
+        data = self._body()
+        username, code, new = str(data.get("username", "")).strip().lower(), str(data.get("code", "")).strip(), str(data.get("new_password", ""))
+        if len(new) < 6:
+            return self._json(400, {"error": "new password must be at least 6 characters"})
+        db = open_db()
+        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        pr = db.execute("SELECT * FROM password_resets WHERE user_id = ? AND used = 0 ORDER BY id DESC LIMIT 1",
+                        (user["id"],)).fetchone() if user else None
+        if not pr or parse_ts(pr["expires_at"]) < utcnow():
+            db.close()
+            return self._json(400, {"error": "no valid code for this account; request a new one"})
+        if pr["attempts"] >= RESET_MAX_ATTEMPTS:
+            db.close()
+            return self._json(429, {"error": "too many wrong codes; request a new one"})
+        if not check_password(code, pr["code_hash"]):
+            db.execute("UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?", (pr["id"],))
+            db.commit(); db.close()
+            return self._json(401, {"error": f"wrong code ({RESET_MAX_ATTEMPTS - pr['attempts'] - 1} tries left)"})
+        db.execute("UPDATE password_resets SET used = 1 WHERE id = ?", (pr["id"],))
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new), user["id"]))
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        db.commit(); db.close()
+        print(f"password reset by email code: {username}")
         self._json(200, {"ok": True})
 
     # ---- notifications
@@ -1122,6 +1270,7 @@ def main():
     print(f"Scans DB:   {DB_PATH}")
     print(f"Device key: {DEVICE_KEY_PATH}  (readers / serial_bridge.py send it as X-Device-Key)")
     device_key()
+    print(f"Email:      {'configured (' + mail_config()['smtp_host'] + ')' if mail_config() else 'not configured; reset codes print here (see mail_config.example.json)'}")
     if PUSH_AVAILABLE:
         vapid_private_pem()
         threading.Thread(target=_notify_worker, daemon=True, name="notify").start()

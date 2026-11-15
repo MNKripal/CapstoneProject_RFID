@@ -5,3 +5,4 @@ wifi_config.h
 __pycache__/
 .DS_Store
 dashboard/vapid_private.pem
+dashboard/mail_config.json

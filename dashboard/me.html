@@ -63,6 +63,12 @@
   </div>
   <div class="card">
     <h2>Account <span id="acct-who"></span></h2>
+    <form class="add" id="email-form" style="margin-bottom:12px">
+      <label class="field">Email, used only to send you a password-reset code<input type="email" id="em-addr" placeholder="you@asu.edu" autocomplete="email"></label>
+      <span></span>
+      <button type="submit">Save email</button>
+    </form>
+    <div id="em-msg" style="margin:-6px 0 10px"></div>
     <form class="add" id="pw-form" autocomplete="off">
       <label class="field">Current password<input type="password" id="pw-cur" required autocomplete="current-password"></label>
       <label class="field">New password (6+ characters)<input type="password" id="pw-new" required minlength="6" autocomplete="new-password"></label>
@@ -271,6 +277,12 @@
   $('notify-off').addEventListener('click', () => act(async () => { await pushDisable(); renderNotify(); }, 'Turning off notifications'));
   $('notify-test').addEventListener('click', () => act(async () => { await api('/api/push/test', { method: 'POST' }); $('notify-hint').textContent = 'Test sent. It should appear in a few seconds.'; }, 'Sending a test'));
 
+  $('email-form').addEventListener('submit', async (e) => {
+    e.preventDefault(); const m = $('em-msg'); m.className = ''; m.textContent = '';
+    try { const j = await api('/api/auth/email', { method: 'PUT', body: JSON.stringify({ email: $('em-addr').value }) }); me.email = j.email;
+      m.className = 'msg-ok'; m.textContent = j.email ? `Saved. Reset codes go to ${j.email}.` : 'Email removed.'; }
+    catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
+  });
   $('pw-form').addEventListener('submit', async (e) => {
     e.preventDefault(); const m = $('pw-msg'); m.className = ''; m.textContent = '';
     try {
@@ -362,7 +374,7 @@
   async function init() {
     const m = await api('/api/auth/me'); me = m.user;
     if (me.role === 'staff') { location.replace('index.html'); return; }
-    $('who').textContent = me.display_name; $('acct-who').textContent = `· signed in as ${me.username}`;
+    $('who').textContent = me.display_name; $('acct-who').textContent = `· signed in as ${me.username}`; $('em-addr').value = me.email || '';
     const r = await api('/api/readers'); readerList = r.readers; readers = Object.fromEntries(readerList.map(x => [x.id, x]));
     await refresh(); route();
     pushInit().then(renderNotify).catch(renderNotify);

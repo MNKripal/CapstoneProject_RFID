@@ -314,6 +314,7 @@
     <form class="inline" id="user-form" style="grid-template-columns: 1fr 1fr 1fr auto auto">
       <label>Username<input type="text" id="u-name" autocomplete="off" required></label>
       <label>Display name<input type="text" id="u-display" autocomplete="off"></label>
+      <label>Email<input type="email" id="u-email" autocomplete="off" placeholder="optional"></label>
       <label>Password<input type="text" id="u-pass" autocomplete="off" required minlength="6"></label>
       <label>Role<select id="u-role"><option value="student">Student</option><option value="staff">Staff</option></select></label>
       <button type="submit" class="primary">Create</button>
@@ -323,7 +324,7 @@
   <div class="card">
     <h2>Accounts <span id="users-sub"></span></h2>
     <div class="table-wrap"><table>
-      <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Tags</th><th>Created</th><th></th></tr></thead>
+      <thead><tr><th>Username</th><th>Name</th><th>Email</th><th>Role</th><th>Tags</th><th>Created</th><th></th></tr></thead>
       <tbody id="user-rows"></tbody></table></div>
   </div>
 </section>
@@ -663,7 +664,7 @@
   }
   function renderUsers() {
     $('user-rows').innerHTML = users.map(u => `<tr>
-      <td class="mono">${esc(u.username)}</td><td>${esc(u.display_name)}</td>
+      <td class="mono">${esc(u.username)}</td><td>${esc(u.display_name)}</td><td class="dim">${u.email ? esc(u.email) : '<span style="color:var(--text-muted)">none</span>'}</td>
       <td>${u.role === 'staff' ? '<span class="badge good">staff</span>' : '<span class="badge muted">student</span>'}</td>
       <td>${u.tags}</td><td class="dim">${fmtDate(u.created_at)}</td>
       <td class="actions"><button class="small" data-pw="${u.id}">Reset password</button>${u.id === me.id ? '<span class="dim" style="color:var(--text-muted)">you</span>' :
@@ -688,7 +689,7 @@
   $('user-form').addEventListener('submit', async (e) => {
     e.preventDefault(); const msg = $('user-form-msg');
     try {
-      const r = await api('/api/users', { method: 'POST', body: JSON.stringify({ username: $('u-name').value, display_name: $('u-display').value, password: $('u-pass').value, role: $('u-role').value }) });
+      const r = await api('/api/users', { method: 'POST', body: JSON.stringify({ username: $('u-name').value, display_name: $('u-display').value, email: $('u-email').value, password: $('u-pass').value, role: $('u-role').value }) });
       msg.className = 'msg-ok'; msg.textContent = `Created ${r.user.role} account ${r.user.username}.`; $('user-form').reset(); await loadUsers(); renderUsers();
     } catch (err) { msg.className = 'msg-err'; msg.textContent = err.message; }
   });

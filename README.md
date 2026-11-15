@@ -144,6 +144,14 @@ the dashboard within a few seconds.
 Passwords are stored as salted PBKDF2 hashes. Sessions are HttpOnly cookies that
 last 30 days. The server never serves the database, the device key or its own code.
 
+Students change their own password in the portal's Account card, and reset a
+forgotten one from the sign-in page with **Forgot your password?**: the server emails
+a 6-digit code to the address on the account, valid for 10 minutes. For that to work,
+copy `dashboard/mail_config.example.json` to `mail_config.json` and fill in an SMTP
+login (for Gmail, an App Password). Without it the code is printed on the server
+console instead, which is enough for bench testing. Staff can also reset a password
+from the Users tab for accounts without an email.
+
 ## Notifications and a public link (optional)
 
 The portal can notify a student's phone or laptop the moment their bike is scanned,
@@ -246,6 +254,9 @@ need the `X-Device-Key` header instead. Students get their own data only.
 | `POST` | `/api/auth/logout` | End the session |
 | `GET` | `/api/auth/me` | Who am I |
 | `POST` | `/api/auth/password` | Change my own password `{"current_password", "new_password"}` |
+| `PUT` | `/api/auth/email` | Set my own email `{"email"}` |
+| `POST` | `/api/auth/forgot` | Email me a 6-digit reset code `{"username"}` (no login needed) |
+| `POST` | `/api/auth/reset` | Set a new password with the code `{"username", "code", "new_password"}` |
 | `GET` | `/api/push` | Are notifications enabled, the public key, my subscribed devices |
 | `POST` / `DELETE` | `/api/push/subscribe` | Register / remove this browser's push subscription |
 | `POST` | `/api/push/test` | Send a test notification to my devices |

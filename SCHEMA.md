@@ -121,10 +121,27 @@ service answers 404 or 410, which means the browser dropped the subscription.
 | `password_hash` | TEXT | yes | PBKDF2-HMAC-SHA256, 200,000 rounds, 16 byte salt. Never returned by the API. |
 | `role` | TEXT | yes | `staff` or `student`. |
 | `created_at` | TEXT | yes | |
+| `email` | TEXT | no | Where password-reset codes are sent. Set by the student in the portal (Account card) or at sign-up, or by staff. Empty means the account cannot self-reset. |
 
-There is no `email` or `phone` column. The username doubles as the email when a
-student signs up with one. A separate `email` and `phone` field is **planned** if we
-add notifications.
+Notifications do not use the email: they go to the browser through the
+push_subscriptions table below. There is no `phone` column.
+
+### password_reset (table `password_resets`)
+
+One row per "Forgot your password?" request. The 6-digit code is stored only as a
+PBKDF2 hash, like a password. A code expires after 10 minutes, dies after 5 wrong
+guesses, and a new request retires any older unused code. One code per account per
+60 seconds. A successful reset signs the account out everywhere.
+
+| Field | Type | Required | Notes |
+| :--- | :--- | :--- | :--- |
+| `id` | INTEGER, primary key | yes | |
+| `user_id` | INTEGER | yes | `users.id`. |
+| `code_hash` | TEXT | yes | PBKDF2 hash of the 6-digit code. |
+| `created_at` | TEXT | yes | |
+| `expires_at` | TEXT | yes | `created_at` plus 10 minutes. |
+| `attempts` | INTEGER | yes | Wrong guesses so far. |
+| `used` | INTEGER (0/1) | yes | 1 once redeemed or superseded. |
 
 ### reader (`readers.json` plus table `reader_status`)
 

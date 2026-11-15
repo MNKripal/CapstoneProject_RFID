@@ -20,10 +20,23 @@
       <label class="field">Password<input type="password" id="si-pass" autocomplete="current-password" required></label>
       <button type="submit" class="primary">Sign in</button>
       <div id="si-msg"></div>
+      <a href="#" id="forgot-link" style="font-size:13px">Forgot your password?</a>
+    </form>
+    <form id="forgot" hidden>
+      <div class="sub" id="fp-step1">Enter your username and we email a 6-digit code to the address on your account.</div>
+      <label class="field">Username<input type="text" id="fp-user" autocomplete="username" required></label>
+      <div id="fp-stage2" hidden>
+        <label class="field">Code from the email<input type="text" id="fp-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" class="mono"></label>
+        <label class="field">New password (6+ characters)<input type="password" id="fp-pass" autocomplete="new-password" minlength="6"></label>
+      </div>
+      <button type="submit" class="primary" id="fp-btn">Send code</button>
+      <div id="fp-msg"></div>
+      <a href="#" id="fp-back" style="font-size:13px">Back to sign in</a>
     </form>
     <form id="signup" hidden>
       <label class="field">Your name<input type="text" id="su-name" autocomplete="name" placeholder="Sparky Sun Devil"></label>
       <label class="field">Username (ASURITE or email)<input type="text" id="su-user" autocomplete="username" required></label>
+      <label class="field">Email (for password resets)<input type="email" id="su-email" autocomplete="email" placeholder="you@asu.edu"></label>
       <label class="field">Password (6+ characters)<input type="password" id="su-pass" autocomplete="new-password" required minlength="6"></label>
       <button type="submit" class="primary">Create account</button>
       <div id="su-msg"></div>
@@ -55,8 +68,30 @@
   });
   $('signup').addEventListener('submit', async (e) => {
     e.preventDefault(); const m = $('su-msg'); m.className = ''; m.textContent = '';
-    try { const j = await post('/api/auth/register', { username: $('su-user').value, password: $('su-pass').value, display_name: $('su-name').value }); go(j.user); }
+    try { const j = await post('/api/auth/register', { username: $('su-user').value, password: $('su-pass').value, display_name: $('su-name').value, email: $('su-email').value }); go(j.user); }
     catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
+  });
+
+  // forgot password: step 1 asks for a code, step 2 takes the code and the new password
+  let fpStage = 1;
+  const showForgot = (on) => { $('forgot').hidden = !on; $('signin').hidden = on; document.querySelector('.tabs').hidden = on; };
+  $('forgot-link').addEventListener('click', (e) => { e.preventDefault(); $('fp-user').value = $('si-user').value; showForgot(true); });
+  $('fp-back').addEventListener('click', (e) => { e.preventDefault(); showForgot(false); });
+  $('forgot').addEventListener('submit', async (e) => {
+    e.preventDefault(); const m = $('fp-msg'); m.className = ''; m.textContent = '';
+    try {
+      if (fpStage === 1) {
+        const j = await post('/api/auth/forgot', { username: $('fp-user').value });
+        fpStage = 2; $('fp-stage2').hidden = false; $('fp-user').readOnly = true; $('fp-btn').textContent = 'Set new password';
+        $('fp-code').required = true; $('fp-pass').required = true; $('fp-code').focus();
+        $('fp-step1').textContent = j.sent ? `We sent a code to ${j.email}. It works for ${j.minutes} minutes.` : `Email is not set up on this server, so the code was printed on the server console. Ask staff for it.`;
+      } else {
+        await post('/api/auth/reset', { username: $('fp-user').value, code: $('fp-code').value, new_password: $('fp-pass').value });
+        showForgot(false); $('si-user').value = $('fp-user').value; $('si-pass').value = '';
+        const s = $('si-msg'); s.className = 'msg-ok'; s.textContent = 'Password changed. Sign in with the new one.';
+        fpStage = 1; $('fp-stage2').hidden = true; $('fp-user').readOnly = false; $('fp-btn').textContent = 'Send code'; $('forgot').reset();
+      }
+    } catch (err) { m.className = 'msg-err'; m.textContent = err.message; }
   });
 })();
 </script>
