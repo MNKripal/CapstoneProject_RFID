@@ -177,6 +177,13 @@ even when the site is closed, using the browser's built-in Web Push. No app is n
    open the app from there. Staff press **Alerts: off** in the top bar of the
    dashboard to receive serious and critical alerts.
 
+The tunnel is only needed while a phone subscribes and whenever someone opens the
+site from outside the local network. Once a phone has subscribed, the notifications
+themselves go from the server to Apple's or Google's push service directly, so they
+keep arriving after the tunnel stops or restarts with a new link. Tapping a
+notification opens the link the phone subscribed on, which works only while that
+link is live.
+
 Under each bike the student chooses when to be told: every tap, only when the bike
 turns up at a different rack than last time, only while it is reported lost, or never.
 A tap on a lost bike always notifies its owner and the staff.
@@ -234,7 +241,7 @@ dashboard/
   portal.css           Shared styles for login.html and me.html
   sw.js                Service worker that shows push notifications and opens the portal
   manifest.json        Lets phones add the portal to the home screen (icons are the PNGs)
-  tunnel.sh            Starts a free Cloudflare tunnel so phones can reach the server over HTTPS
+  tunnel.sh            Free Cloudflare tunnel: HTTPS link for subscribing phones and off-network access
   readers.json         Reader ID -> name, latitude, longitude
   serial_bridge.py     Forwards serial output from the Pico to the server
   serial_watch.py      Timestamped serial viewer for bench testing
