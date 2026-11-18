@@ -20,6 +20,7 @@ exec cloudflared tunnel --no-autoupdate --url "http://localhost:$PORT" 2>&1 | wh
     *trycloudflare.com*)
       url=$(printf '%s\n' "$line" | grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com')
       [ -n "$url" ] && printf '\n  Dashboard link:  %s\n  Student portal:  %s/me.html\n\n' "$url" "$url" ;;
-    *ERR*|*error*) printf '%s\n' "$line" ;;
+    *ERR*|*error*|*failed*|*429*) printf '%s\n' "$line" ;;
   esac
 done
+echo "Tunnel closed. If you saw 'status 429', Cloudflare is rate-limiting new quick tunnels from this network; wait a while and run ./tunnel.sh again."
