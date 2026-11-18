@@ -926,18 +926,25 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Connection", "keep-alive")
+            # Chunked framing so proxies (the Cloudflare tunnel in particular)
+            # forward each event as it is written instead of buffering an
+            # unframed HTTP/1.1 body until the connection closes.
+            self.send_header("Transfer-Encoding", "chunked")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
+
+            def chunk(b):
+                return f"{len(b):X}\r\n".encode() + b + b"\r\n"
+
             for ev in history[-100:]:
-                self.wfile.write(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode())
+                self.wfile.write(chunk(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode()))
             self.wfile.flush()
             while True:
                 try:
                     ev = q_.get(timeout=15)
-                    self.wfile.write(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode())
+                    self.wfile.write(chunk(f"id: {ev['id']}\ndata: {json.dumps(ev)}\n\n".encode()))
                 except queue.Empty:
-                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.write(chunk(b": keepalive\n\n"))
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
