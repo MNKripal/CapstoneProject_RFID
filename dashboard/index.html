@@ -165,7 +165,7 @@
   #banner[hidden] { display: none; }
 </style>
 </head>
-<body>
+<body hidden>
 <nav class="top">
   <span class="brand">RFID Scan Log</span>
   <a class="tab" href="#/activity" data-tab="activity">Activity</a>
@@ -812,9 +812,10 @@
   api('/api/auth/me').then(m => {
     me = m.user;
     if (me.role !== 'staff') { location.replace('me.html'); throw new Error('login required'); }
+    document.body.hidden = false;
     $('who').textContent = `${me.display_name} (staff)`;
   }).then(loadReaders).then(loadUsers).then(refreshTags).then(() => { route(); liveStart(); return poll(); }).then(() => setInterval(poll, POLL_MS))
-    .catch(e => { if (e.message === 'login required') return; banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
+    .catch(e => { if (e.message === 'login required') return; document.body.hidden = false; banner(`Could not load the dashboard: ${e.message}. The server may be an older version — stop it, run "python3 server.py" again, then reload.`); console.error(e); });
 })();
 </script>
 </body>

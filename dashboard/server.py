@@ -734,7 +734,23 @@ class Handler(SimpleHTTPRequestHandler):
                 self.path = "/login.html"
             elif path.endswith((".db", ".txt", ".py", ".pyc", ".pem", ".sh")):   # never serve the database, keys or code
                 return self._json(404, {"error": "not found"})
+            elif path in ("/index.html", "/me.html"):
+                # Send each role straight to its own page so a student never sees
+                # the staff layout, not even for the moment before the page's own check.
+                db = open_db()
+                try: user = self._session_user(db)
+                finally: db.close()
+                if user and user["role"] != "staff" and path == "/index.html":
+                    return self._redirect("/me.html")
+                if user and user["role"] == "staff" and path == "/me.html":
+                    return self._redirect("/index.html")
             super().do_GET()
+
+    def _redirect(self, where):
+        self.send_response(302)
+        self.send_header("Location", where)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _api_only(self, method):
         if not self._dispatch(method):
