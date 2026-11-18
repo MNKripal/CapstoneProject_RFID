@@ -38,6 +38,7 @@ target_link_libraries(blink_any
     pico_stdlib
     pico_rand
     hardware_spi
+    hardware_watchdog
     pico_cyw43_arch_lwip_threadsafe_background
 )
 

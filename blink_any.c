@@ -7,6 +7,7 @@
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include "pico/rand.h"
+#include "hardware/watchdog.h"
 #include "mfrc522.h"
 
 // Wi-Fi is compiled in only when wifi_config.h exists (copy wifi_config.example.h).
@@ -81,7 +82,7 @@
 // Heartbeat interval. The dashboard marks a reader offline when it stops
 // hearing these (see dashboard/server.py OFFLINE_AFTER_S).
 #define HEARTBEAT_MS          10000
-#define FIRMWARE_VERSION      "0.4.0"
+#define FIRMWARE_VERSION      "0.4.1"
 // Scans are kept in memory until the host acknowledges them (ACK,<seq>) and
 // are re-sent at this interval, so a disconnected laptop or a server restart
 // does not lose a read. PENDING_MAX bounds the memory; oldest is dropped first.
@@ -89,6 +90,9 @@
 #define PENDING_MAX           64
 // Over Wi-Fi, how soon after one scan upload the next may start.
 #define NET_SEND_GAP_MS       250
+#define NET_LOG_GAP_MS        2000   // at most one POST /api/log every 2 s, even in a reset storm
+#define RECOVERY_LOG_MS       2000   // collapse repeated recovery messages into one line per 2 s
+#define WATCHDOG_MS           8000   // hardware reboot if the main loop stalls this long
 // How many times to retry the UID read within one poll when the card answered
 // the request but the anticollision step failed (card still moving in).
 #define UID_READ_RETRIES      2
@@ -312,6 +316,7 @@ static void init_reader_blocking(MFRC522Ptr_t mfrc) {
             PCD_DumpVersionToSerial(mfrc);
             return;
         }
+        watchdog_update();
         printf("RC522 not responding (attempt %d). ", attempt);
         PCD_DumpVersionToSerial(mfrc);
         printf("  Check wiring: SDA->GPIO%d SCK->GPIO%d MOSI->GPIO%d "
@@ -554,7 +559,9 @@ int main(void) {
     init_reader_blocking(mfrc);
     boot_id = get_rand_32();
     printf("BOOT,%s,%08lX,pending=0\n", READER_ID, (unsigned long)boot_id);
-    rlog("BOOT,%s,%08lX,fw=%s", READER_ID, (unsigned long)boot_id, FIRMWARE_VERSION);
+    rlog("BOOT,%s,%08lX,fw=%s%s", READER_ID, (unsigned long)boot_id, FIRMWARE_VERSION,
+         watchdog_caused_reboot() ? ",watchdog-reboot" : "");
+    watchdog_enable(WATCHDOG_MS, 1);
 #ifdef WIFI_ENABLED
     printf("WIFI,enabled,server=%s:%d\n", SERVER_HOST, SERVER_PORT);
 #ifndef WIFI_SSID_ALT
@@ -579,7 +586,10 @@ int main(void) {
 #ifdef WIFI_ENABLED
     absolute_time_t next_net_hb = make_timeout_time_ms(2000);
     absolute_time_t next_net_send = get_absolute_time();
+    absolute_time_t next_net_log = get_absolute_time();
 #endif
+    absolute_time_t next_recovery_log = get_absolute_time();
+    uint32_t unreported_recoveries = 0;
     uint32_t consecutive_failures = 0;
     uint32_t recoveries = 0;
     // reset-storm detection for the adaptive antenna drive
@@ -589,6 +599,7 @@ int main(void) {
 
     while (true) {
         sleep_ms(POLL_INTERVAL_MS);
+        watchdog_update();
 
         // Machine-readable liveness line for dashboard/serial_bridge.py:
         //   HB,<reader_id>
@@ -616,7 +627,8 @@ int main(void) {
                 net_send_heartbeat();
             } else if (time_reached(next_net_send) && net_send_oldest_scan()) {
                 next_net_send = make_timeout_time_ms(NET_SEND_GAP_MS);
-            } else if (pending_count() == 0 && net_send_logs()) {
+            } else if (pending_count() == 0 && time_reached(next_net_log) && net_send_logs()) {
+                next_net_log = make_timeout_time_ms(NET_LOG_GAP_MS);
                 next_net_send = make_timeout_time_ms(NET_SEND_GAP_MS);
             }
         }
@@ -650,12 +662,21 @@ int main(void) {
                 // (a few ms) instead of a full hardware reset (~250 ms).
                 PCD_Configure(mfrc);
                 if (PCD_IsHealthy(mfrc)) {
-                    rlog("RC522 lost its configuration (recovery #%lu), re-configured", (unsigned long)recoveries);
+                    // One line per RECOVERY_LOG_MS at most: a storm of 8/s used to
+                    // flood the serial port and the Wi-Fi log queue.
+                    unreported_recoveries++;
+                    if (time_reached(next_recovery_log)) {
+                        next_recovery_log = make_timeout_time_ms(RECOVERY_LOG_MS);
+                        rlog("RC522 lost its configuration (recovery #%lu, %lu in the last %d s), re-configured",
+                             (unsigned long)recoveries, (unsigned long)unreported_recoveries, RECOVERY_LOG_MS / 1000);
+                        unreported_recoveries = 0;
+                    }
                     consecutive_failures = 0;
                     continue;
                 }
             }
             rlog("RC522 not responding (recovery #%lu), full re-init...", (unsigned long)recoveries);
+            unreported_recoveries = 0;
             init_reader_blocking(mfrc);
             consecutive_failures = 0;
             continue;

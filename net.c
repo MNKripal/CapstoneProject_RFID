@@ -92,6 +92,18 @@ static void req_close(void) {
     }
 }
 
+// Drop a request that did not complete. tcp_close() on a connection with data
+// still in flight keeps the pcb and its segments alive for minutes of
+// retransmission; a burst of such requests exhausted the 4 KB lwIP heap and
+// silenced the reader for ~5 min at a time. tcp_abort() frees everything now.
+static void req_abort(void) {
+    if (R.pcb) {
+        tcp_arg(R.pcb, NULL); tcp_recv(R.pcb, NULL); tcp_err(R.pcb, NULL); tcp_sent(R.pcb, NULL);
+        tcp_abort(R.pcb);
+        R.pcb = NULL;
+    }
+}
+
 static void req_finish(void) {        // lwIP context: just mark done, main loop dispatches
     req_close();
     R.done = true;
@@ -117,8 +129,12 @@ static void on_err(void *arg, err_t err) {           // pcb already freed by lwI
 
 static err_t on_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
     (void)arg;
-    if (err != ERR_OK) { req_finish(); return err; }
-    tcp_write(pcb, R.req, R.req_len, TCP_WRITE_FLAG_COPY);
+    if (err != ERR_OK) { req_abort(); R.done = true; return ERR_ABRT; }
+    if (tcp_write(pcb, R.req, R.req_len, TCP_WRITE_FLAG_COPY) != ERR_OK) {
+        // No room to queue the request (heap or segment pool full): give up at
+        // once rather than holding the connection open until the deadline.
+        req_abort(); R.done = true; return ERR_ABRT;
+    }
     tcp_output(pcb);
     return ERR_OK;
 }
@@ -199,7 +215,7 @@ void net_poll(void) {
     // request completion / timeout
     if (R.busy) {
         if (!R.done && time_reached(R.deadline)) {
-            cyw43_arch_lwip_begin(); req_close(); cyw43_arch_lwip_end();
+            cyw43_arch_lwip_begin(); req_abort(); cyw43_arch_lwip_end();
             R.done = true; R.resp_len = 0; R.resp[0] = 0;
         }
         if (R.done) {
