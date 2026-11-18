@@ -42,6 +42,12 @@ target_link_libraries(blink_any
     pico_cyw43_arch_lwip_threadsafe_background
 )
 
+# USB-only build: cmake -DNO_WIFI=ON ... ignores wifi_config.h and leaves the radio off
+option(NO_WIFI "Build without Wi-Fi even when wifi_config.h is present" OFF)
+if(NO_WIFI)
+    target_compile_definitions(blink_any PRIVATE NO_WIFI=1)
+endif()
+
 # Diagnostic build: cmake -DRFID_DIAG=ON ... prints register changes after boot
 option(RFID_DIAG "Build the reader with the register-watch diagnostic enabled" OFF)
 if(RFID_DIAG)

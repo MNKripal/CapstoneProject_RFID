@@ -138,6 +138,7 @@ def main():
         try:
             with serial.Serial(port, args.baud, timeout=1) as ser:
                 ser.write(b"HELLO\n")           # ask the reader to re-send anything it is still holding
+                reader_id = None                # learned from the first BOOT/HB/SCAN line
                 while True:
                     raw = ser.readline()
                     if not raw:
@@ -148,6 +149,9 @@ def main():
                     if not line.startswith("HB,"):
                         print(f"[pico] {line}")
                     if line.startswith(("SCAN,", "HB,", "BOOT,", "WARN,")):
+                        parts = line.split(",")
+                        if len(parts) > 1 and parts[1]:
+                            reader_id = parts[1]
                         try:
                             handle_line(line, args.server, ser, stored)
                         except urllib.error.HTTPError as e:
@@ -156,7 +160,7 @@ def main():
                             print(f"  ! could not forward to server: {e}  (the reader will re-send it)")
                     elif line.startswith(("RC522 ", "ANTENNA,", "WIFI,", "Too many")):
                         try:
-                            post(args.server, "/api/log", {"reader_id": None, "transport": "usb", "line": line})
+                            post(args.server, "/api/log", {"reader_id": reader_id, "transport": "usb", "line": line})
                         except urllib.error.HTTPError as e:
                             print(f"  ! server rejected it: {e.code} {e.read().decode(errors='replace')[:120]}")
                         except (urllib.error.URLError, OSError, KeyError, ValueError) as e:

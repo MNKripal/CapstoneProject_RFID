@@ -11,7 +11,7 @@
 #include "mfrc522.h"
 
 // Wi-Fi is compiled in only when wifi_config.h exists (copy wifi_config.example.h).
-#if __has_include("wifi_config.h")
+#if __has_include("wifi_config.h") && !defined(NO_WIFI)
 #include "wifi_config.h"
 #include "net.h"
 #define WIFI_ENABLED 1
