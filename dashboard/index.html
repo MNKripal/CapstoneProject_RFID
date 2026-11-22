@@ -774,7 +774,7 @@
   // Live feed: Server-Sent Events when they get through, polling when they do not.
   // Proxies such as the Cloudflare quick tunnel accept the stream but never pass
   // its bytes on, so if nothing arrives within a few seconds we poll
-  // /api/events/recent every 2 s instead. Events are de-duplicated by id.
+  // /api/events/recent every second instead. Events are de-duplicated by id.
   let liveLastId = 0, livePollTimer = null, liveStreamOk = false, liveWatchdog = null;
   function liveTake(ev) {
     if (ev.id <= liveLastId) return;
@@ -789,7 +789,7 @@
       if (!liveStreamOk) liveDot('var(--good)', 'live via polling (stream blocked by a proxy)');
     } catch (e) { liveDot('var(--critical)', 'live feed unreachable, retrying'); }
   }
-  function livePollStart() { if (!livePollTimer) { livePollOnce(); livePollTimer = setInterval(livePollOnce, 2000); } }
+  function livePollStart() { if (!livePollTimer) { livePollOnce(); livePollTimer = setInterval(livePollOnce, 1000); } }
   function livePollStop() { if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; } }
   function liveStart() {
     if (es) return;
