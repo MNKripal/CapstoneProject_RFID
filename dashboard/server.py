@@ -693,7 +693,8 @@ class Handler(SimpleHTTPRequestHandler):
         ("DELETE", r"^/api/scans$",                 "delete_scans",     "staff"),
         ("POST",   r"^/api/heartbeat$",             "post_heartbeat",   "device"),
         ("POST",   r"^/api/log$",                   "post_log",         "device"),
-        ("GET",    r"^/api/events$",                "get_events",       "user"),
+        ("GET",    r"^/api/events$",                "get_events",       "staff"),
+        ("GET",    r"^/api/events/recent$",        "get_events_recent","staff"),
         ("GET",    r"^/api/readers$",               "get_readers",      "user"),
         ("GET",    r"^/api/tags$",                  "get_tags",         "user"),
         ("POST",   r"^/api/tags$",                  "post_tag",         "user"),
@@ -966,6 +967,17 @@ class Handler(SimpleHTTPRequestHandler):
             pass
         finally:
             unsubscribe(q_)
+
+    def get_events_recent(self, q):
+        """Polling fallback for the Live tab: events newer than ?after=<id>, oldest first.
+        Used when the event stream cannot get through a proxy (the Cloudflare quick
+        tunnel delivers no streamed bytes). Same data as GET /api/events."""
+        after = int(q.get("after", ["0"])[0])
+        limit = min(int(q.get("limit", ["200"])[0]), EVENT_HISTORY)
+        with _bus_lock:
+            evs = [e for e in _events if e["id"] > after][-limit:]
+            latest = _event_seq
+        self._json(200, {"events": evs, "latest": latest, "server_time": iso(utcnow())})
 
     def get_readers(self, q):
         readers = load_readers()

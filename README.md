@@ -178,7 +178,9 @@ even when the site is closed, using the browser's built-in Web Push. No app is n
    dashboard to receive serious and critical alerts.
 
 The tunnel is only needed while a phone subscribes and whenever someone opens the
-site from outside the local network. Once a phone has subscribed, the notifications
+site from outside the local network. The Live tab's event stream does not get
+through the quick tunnel, so on the public link the Live tab switches itself to
+polling every two seconds; everything else behaves the same. Once a phone has subscribed, the notifications
 themselves go from the server to Apple's or Google's push service directly, so they
 keep arriving after the tunnel stops or restarts with a new link. Tapping a
 notification opens the link the phone subscribed on, which works only while that
@@ -267,6 +269,8 @@ need the `X-Device-Key` header instead. Students get their own data only.
 | `GET` | `/api/push` | Are notifications enabled, the public key, my subscribed devices |
 | `POST` / `DELETE` | `/api/push/subscribe` | Register / remove this browser's push subscription |
 | `POST` | `/api/push/test` | Send a test notification to my devices |
+| `GET` | `/api/events` | Staff: live stream (Server-Sent Events) of scans, heartbeats, alerts and reader log lines |
+| `GET` | `/api/events/recent?after=<id>` | Staff: the same events as a list, oldest first; the Live tab polls this when a proxy blocks the stream |
 | `GET` / `POST` | `/api/users` | Staff: list / create accounts |
 | `PUT` / `DELETE` | `/api/users/<id>` | Staff: change role, name or password / delete |
 | `POST` | `/api/scans` | Reader: log a scan `{"reader_id": "rack-01", "uid": "DEADBEEF"}` |

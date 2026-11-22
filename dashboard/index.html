@@ -771,15 +771,39 @@
     box.innerHTML = html || '<span class="t">waiting for events…</span>';
     if ($('live-scroll').checked) box.scrollTop = box.scrollHeight;
   }
+  // Live feed: Server-Sent Events when they get through, polling when they do not.
+  // Proxies such as the Cloudflare quick tunnel accept the stream but never pass
+  // its bytes on, so if nothing arrives within a few seconds we poll
+  // /api/events/recent every 2 s instead. Events are de-duplicated by id.
+  let liveLastId = 0, livePollTimer = null, liveStreamOk = false, liveWatchdog = null;
+  function liveTake(ev) {
+    if (ev.id <= liveLastId) return;
+    liveLastId = ev.id; liveAppend(ev);
+    if (ev.type === 'scan' || ev.type === 'alert' || ev.type === 'reader') poll();   // refresh the dashboard right away
+  }
+  function liveDot(color, title) { $('live-dot').hidden = false; $('live-dot').style.background = color; $('live-dot').title = title; }
+  async function livePollOnce() {
+    try {
+      const r = await api(`/api/events/recent?after=${liveLastId}`);
+      r.events.forEach(liveTake);
+      if (!liveStreamOk) liveDot('var(--good)', 'live via polling (stream blocked by a proxy)');
+    } catch (e) { liveDot('var(--critical)', 'live feed unreachable, retrying'); }
+  }
+  function livePollStart() { if (!livePollTimer) { livePollOnce(); livePollTimer = setInterval(livePollOnce, 2000); } }
+  function livePollStop() { if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; } }
   function liveStart() {
     if (es) return;
+    livePollOnce();                                   // seed the log immediately, whatever the stream does
     es = new EventSource('/api/events');
-    es.onopen = () => { $('live-dot').hidden = false; $('live-dot').style.background = 'var(--good)'; $('live-dot').title = 'live stream connected'; };
-    es.onerror = () => { $('live-dot').hidden = false; $('live-dot').style.background = 'var(--critical)'; $('live-dot').title = 'live stream disconnected, retrying'; };
+    es.onopen = () => {
+      liveDot('var(--good)', 'live stream connected');
+      clearTimeout(liveWatchdog);
+      liveWatchdog = setTimeout(() => { if (!liveStreamOk) livePollStart(); }, 5000);   // open but silent: proxy is buffering
+    };
+    es.onerror = () => { liveDot('var(--critical)', 'live stream disconnected, retrying'); liveStreamOk = false; livePollStart(); };
     es.onmessage = (m) => {
-      const ev = JSON.parse(m.data); liveAppend(ev);
-      // anything that changes the dashboard: refresh right away instead of waiting for the next poll
-      if (ev.type === 'scan' || ev.type === 'alert' || ev.type === 'reader') poll();
+      liveStreamOk = true; livePollStop(); liveDot('var(--good)', 'live stream connected');
+      liveTake(JSON.parse(m.data));
     };
   }
   ['live-hb', 'live-scroll'].forEach(id => $(id).addEventListener('change', () => liveRender()));
