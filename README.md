@@ -3,6 +3,33 @@
 **Capstone Project, Arizona State University (Tempe campus)**
 Team: Kripal Mogala, Nihar Reddy
 
+## Handover checklist
+
+For the sponsor taking the project over. Each item links to the part of this
+README that covers it; the full deployment document (architecture, best
+practices, ownership transfer) is delivered alongside this repository.
+
+- [x] **Summary and intended use**: [What this project does](#what-this-project-does)
+      and [Features](#features).
+- [x] **Installation and technical documentation**: [Hardware](#hardware) and
+      [Wiring](#wiring), [Software you need](#software-you-need),
+      [Getting started](#getting-started), [Wi-Fi mode](#wi-fi-mode-optional),
+      [Project layout](#project-layout), [REST API](#rest-api) and
+      [SCHEMA.md](SCHEMA.md). Versions used to build and test the handover
+      state: firmware 0.4.1, Pico SDK 2.2.0, ARM GNU toolchain 14.2 Rel1,
+      Python 3.9, pywebpush 2.1.2, pyserial 3.5, Leaflet 1.9.4,
+      cloudflared 2026.11.0.
+- [x] **User guide**: [Accounts and access](#accounts-and-access),
+      [Notifications and a public link](#notifications-and-a-public-link-optional)
+      and [How authorization works](#how-authorization-works).
+- [x] **Support contact**: Kripal Mogala (GitHub: MNKripal) and Nihar Reddy Thadi.
+      Open an issue on this repository, or e-mail the team at the addresses in
+      the deployment document.
+- [ ] **Secrets are not in this repository**: `wifi_config.h`,
+      `dashboard/device_key.txt`, `dashboard/vapid_private.pem`,
+      `dashboard/mail_config.json` and `dashboard/scans.db` are handed over
+      separately. Copy the `.example` files to create new ones.
+
 ## What this project does
 
 Bikes on campus get an RFID tag. Each bike rack gets a small reader built from a
